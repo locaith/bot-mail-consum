@@ -181,6 +181,8 @@ class ExcelWriter {
       }
 
       await workbook.xlsx.writeFile(this.outputFile);
+    }).catch(err => {
+      console.error(`\n[LỖI EXCEL] Không thể lưu file ${this.outputFile}. Có thể file đang mở. Lỗi: ${err.message}\n`);
     });
 
     return this.queue;
@@ -507,40 +509,42 @@ class GmailWebBot {
       await this.randomDelay(1200, 2500);
 
       const detail = await detailPage.evaluate(() => {
-        function textOf(selectorList) {
+        function textOfLast(selectorList) {
           for (const selector of selectorList) {
-            const el = document.querySelector(selector);
-            if (el && el.textContent) {
-              const text = el.textContent.replace(/\s+/g, ' ').trim();
-              if (text) return text;
+            const els = document.querySelectorAll(selector);
+            if (els.length > 0) {
+              for (let i = els.length - 1; i >= 0; i--) {
+                const text = (els[i].textContent || '').replace(/\s+/g, ' ').trim();
+                if (text) return text;
+              }
             }
           }
           return '';
         }
 
-        function attrOf(selectorList, attr) {
+        function attrOfLast(selectorList, attr) {
           for (const selector of selectorList) {
-            const el = document.querySelector(selector);
-            if (el) {
-              const value = el.getAttribute(attr);
-              if (value) return value;
+            const els = document.querySelectorAll(selector);
+            if (els.length > 0) {
+              for (let i = els.length - 1; i >= 0; i--) {
+                const value = els[i].getAttribute(attr);
+                if (value) return value;
+              }
             }
           }
           return '';
         }
 
-        const subject = textOf(['h2.hP', 'h2[data-thread-perm-id]', 'h2']);
-        const senderName = textOf(['span.gD', 'h3.iw span[email]', 'span[email]']);
-        const senderEmail = attrOf(['span.gD[email]', 'span[email]'], 'email') || textOf(['span[email]']);
-        const rawTimestamp = attrOf(['span.g3[title]', 'span[title][class*="g3"]'], 'title') || textOf(['span.g3', 'span[title][class*="g3"]', 'time']);
+        const subject = textOfLast(['h2.hP', 'h2[data-thread-perm-id]', 'h2']);
+        const senderName = textOfLast(['span.gD', 'h3.iw span[email]', 'span[email]']);
+        const senderEmail = attrOfLast(['span.gD[email]', 'span[email]'], 'email') || textOfLast(['span[email]']);
+        const rawTimestamp = attrOfLast(['span.g3[title]', 'span[title][class*="g3"]'], 'title') || textOfLast(['span.g3', 'span[title][class*="g3"]', 'time']);
 
         let body = '';
         const bodyNodes = Array.from(document.querySelectorAll('div.a3s.aiL, div.a3s, div[role="listitem"] div[dir="auto"]'));
         if (bodyNodes.length > 0) {
-          const longest = bodyNodes
-            .map(node => (node.innerText || '').trim())
-            .sort((a, b) => b.length - a.length)[0] || '';
-          body = longest;
+          // Lấy nội dung của message cuối cùng (mới nhất trong thread)
+          body = (bodyNodes[bodyNodes.length - 1].innerText || '').replace(/\s+/g, ' ').trim();
         }
 
         if (!body) {
@@ -814,6 +818,8 @@ class GmailWebBot {
       } catch (_) { }
 
       await this.applySearchQuery();
+      // Đảm bảo DOM load xong kết quả
+      await this.page.waitForSelector('.zA', { state: 'attached', timeout: 15000 }).catch(() => {});
 
       const targetCount = this.account.maxEmails;
       const onlyUnread = this.account.onlyUnread;
@@ -826,13 +832,14 @@ class GmailWebBot {
 
       while (rows.length < targetCount && noGrowthRounds < 4) {
         const batch = await this.page.evaluate(({ onlyUnread }) => {
-          const threadElements = Array.from(document.querySelectorAll('[data-thread-id], [data-legacy-thread-id], .zA, tr[role="row"]'));
+          // Chỉ gom tr.zA để không trúng nhầm các nút UI như Tìm kiếm
+          const threadElements = Array.from(document.querySelectorAll('.zA, tr.zA'));
           const items = [];
           const seenThreadIds = new Set();
 
           for (const el of threadElements) {
             const threadId = el.getAttribute('data-thread-id') || el.getAttribute('data-legacy-thread-id');
-            let row = el.closest('tr, div[role="row"], div[role="listitem"], .zA');
+            let row = el; // Vì selector đã là .zA, row chính là email
             if (!row) continue;
 
             const link = row.querySelector('a[href*="/"]');
