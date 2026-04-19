@@ -6,3 +6,4 @@ state/
 output/
 .DS_Store
 *.log
+*.xlsx
