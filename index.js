@@ -1027,11 +1027,28 @@ async function main() {
     }
   }
 
-  const selectedAccounts = loadSelectedAccounts(accounts);
-
-  if (!selectedAccounts.length) {
-    console.log(chalk.red('Không có tài khoản nào được bật để chạy. Vui lòng kiểm tra accounts.json.'));
+  let selectedAccounts = [];
+  const activeAccounts = accounts.filter(a => a.enabled);
+  
+  if (activeAccounts.length === 0) {
+    console.log(chalk.red('Không có tài khoản nào (đang Bật) để chạy. Vui lòng kiểm tra accounts.json.'));
     process.exit(1);
+  } else if (activeAccounts.length === 1) {
+    selectedAccounts = activeAccounts;
+  } else {
+    const selection = await ask(`\nBạn muốn cào mail từ những tài khoản nào? (Gõ 1, 2... cách nhau dấu phẩy, hoặc 'all' để lấy tất cả): `);
+    if (selection.trim().toLowerCase() === 'all' || selection.trim() === '') {
+      selectedAccounts = activeAccounts;
+    } else {
+      const parts = selection.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+      if (parts.length > 0) {
+         selectedAccounts = activeAccounts.filter((_, idx) => parts.includes(idx + 1));
+      }
+      if (selectedAccounts.length === 0) {
+         console.log(chalk.yellow('Lựa chọn không hợp lệ, sẽ tự động lấy tất cả các tài khoản.'));
+         selectedAccounts = activeAccounts;
+      }
+    }
   }
 
   if (process.argv.includes('--setup')) {
