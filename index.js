@@ -23,7 +23,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
 const INTRO_NAME = process.env.INTRO_NAME || 'dev Ha';
 
-const EXCEL_HEADERS = [
+let EXCEL_HEADERS = [
   'account_id', 'email', 'message_key', 'gmail_url', 'thread_url', 'sender_name', 'sender_email', 'subject',
   'received_at_raw', 'received_at_iso', 'received_at_local', 'body_text', 'ai_json', 'ai_status',
   'ai_confidence', 'ai_error', 'request_type', 'customer_name', 'phone', 'email_extracted', 'order_code',
@@ -643,38 +643,46 @@ class GmailWebBot {
   }
 
   async callGemini(detail) {
+    const customPrompt = workerData.customPrompt || '';
+    const customColumns = workerData.customColumns || [];
+
     if (!GEMINI_API_KEY) {
-      return {
-        ai_status: 'skipped',
-        ai_confidence: '',
-        ai_json: '',
-        ai_error: 'Missing GEMINI_API_KEY',
-        request_type: '',
-        customer_name: '',
-        phone: '',
-        email_extracted: '',
-        order_code: '',
-        amount: '',
-        currency: '',
-        note: ''
-      };
+      const skipObj = { ai_status: 'skipped', ai_confidence: '', ai_json: '', ai_error: 'Missing GEMINI_API_KEY' };
+      if (customColumns.length > 0) {
+        customColumns.forEach(c => skipObj[c] = '');
+      } else {
+        ['request_type', 'customer_name', 'phone', 'email_extracted', 'order_code', 'amount', 'currency', 'note'].forEach(c => skipObj[c] = '');
+      }
+      return skipObj;
     }
 
+    let dynamicSchemaObj = {};
+    if (customColumns.length > 0) {
+      customColumns.forEach(c => dynamicSchemaObj[c] = "");
+    } else {
+      dynamicSchemaObj = {
+        "request_type": "",
+        "customer_name": "",
+        "phone": "",
+        "email_extracted": "",
+        "order_code": "",
+        "amount": "",
+        "currency": "",
+        "note": ""
+      };
+    }
+    dynamicSchemaObj.confidence = 0;
+    const dynamicSchemaStr = JSON.stringify(dynamicSchemaObj, null, 2);
+
+    const taskText = customPrompt 
+      ? `Yêu cầu đặc biệt: ${customPrompt}\n` 
+      : 'Bạn là bộ chuẩn hóa email.\n';
+
     const prompt = [
-      'Bạn là bộ chuẩn hóa email.',
+      taskText,
       'Đọc email và trả về JSON hợp lệ đúng schema dưới đây.',
       'Chỉ trả về JSON, không giải thích, không markdown.',
-      '{',
-      '  "request_type": "",',
-      '  "customer_name": "",',
-      '  "phone": "",',
-      '  "email_extracted": "",',
-      '  "order_code": "",',
-      '  "amount": "",',
-      '  "currency": "",',
-      '  "note": "",',
-      '  "confidence": 0',
-      '}',
+      dynamicSchemaStr,
       '',
       `From: ${detail.senderName} <${detail.senderEmail}>`,
       `Subject: ${detail.subject}`,
@@ -696,37 +704,31 @@ class GmailWebBot {
       });
 
       const text = response?.data?.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('') || '{}';
-      const parsed = JSON.parse(text);
+      
+      let parsed = {};
+      try {
+         const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
+         if (jsonMatch) parsed = JSON.parse(jsonMatch[1]);
+         else parsed = JSON.parse(text);
+      } catch (e) {
+         parsed = {};
+      }
 
-      return {
-        ai_status: 'success',
-        ai_confidence: parsed.confidence ?? '',
-        ai_json: JSON.stringify(parsed),
-        ai_error: '',
-        request_type: parsed.request_type || '',
-        customer_name: parsed.customer_name || '',
-        phone: parsed.phone || '',
-        email_extracted: parsed.email_extracted || '',
-        order_code: parsed.order_code || '',
-        amount: parsed.amount || '',
-        currency: parsed.currency || '',
-        note: parsed.note || ''
-      };
+      const resObj = { ai_status: 'success', ai_confidence: parsed.confidence ?? '', ai_json: JSON.stringify(parsed), ai_error: '' };
+      if (customColumns.length > 0) {
+        customColumns.forEach(c => resObj[c] = parsed[c] || '');
+      } else {
+        ['request_type', 'customer_name', 'phone', 'email_extracted', 'order_code', 'amount', 'currency', 'note'].forEach(c => resObj[c] = parsed[c] || '');
+      }
+      return resObj;
     } catch (error) {
-      return {
-        ai_status: 'error',
-        ai_confidence: '',
-        ai_json: '',
-        ai_error: cleanText(error.response?.data ? JSON.stringify(error.response.data) : error.message),
-        request_type: '',
-        customer_name: '',
-        phone: '',
-        email_extracted: '',
-        order_code: '',
-        amount: '',
-        currency: '',
-        note: ''
-      };
+      const errObj = { ai_status: 'error', ai_confidence: '', ai_json: '', ai_error: cleanText(error.response?.data ? JSON.stringify(error.response.data) : error.message) };
+      if (customColumns.length > 0) {
+        customColumns.forEach(c => errObj[c] = '');
+      } else {
+        ['request_type', 'customer_name', 'phone', 'email_extracted', 'order_code', 'amount', 'currency', 'note'].forEach(c => errObj[c] = '');
+      }
+      return errObj;
     }
   }
 
@@ -763,16 +765,15 @@ class GmailWebBot {
       ai_status: ai.ai_status,
       ai_confidence: ai.ai_confidence,
       ai_error: ai.ai_error,
-      request_type: ai.request_type,
-      customer_name: ai.customer_name,
-      phone: ai.phone,
-      email_extracted: ai.email_extracted,
-      order_code: ai.order_code,
-      amount: ai.amount,
-      currency: ai.currency,
-      note: ai.note,
       created_at: DateTime.now().setZone(TIMEZONE).toISO()
     };
+
+    const customColumns = workerData.customColumns || [];
+    if (customColumns.length > 0) {
+      customColumns.forEach(c => row[c] = ai[c] || '');
+    } else {
+      ['request_type', 'customer_name', 'phone', 'email_extracted', 'order_code', 'amount', 'currency', 'note'].forEach(c => row[c] = ai[c] || '');
+    }
 
     this.processed.keys[messageKey] = {
       subject: row.subject,
@@ -1000,6 +1001,28 @@ async function main() {
     }
 
     // --- HỎI NGƯỜI DÙNG QUY TRÌNH ---
+    console.log(chalk.yellow('\n--- THIẾT LẬP AI VÀ EXCEL ---'));
+    let customPrompt = await ask(`Bạn muốn AI lọc thông tin gì? (Ví dụ: 'tập trung lấy mã OTP', để trống = chạy mặc định): `);
+    let colsInput = await ask(`Bạn muốn tạo các cột Excel nào? (Nhập tên cột, cách nhau bằng dấu phẩy. Vd: 'NganHang, SoTien'. Để trống = mặc định): `);
+    
+    let customColumns = [];
+    if (colsInput.trim()) {
+      customColumns = colsInput.split(',').map(c => cleanText(c).replace(/[^a-zA-Z0-9_\u0080-\uFFFF]/g, '')).filter(Boolean);
+      const baseHeaders = [
+        'account_id', 'email', 'message_key', 'gmail_url', 'thread_url', 'sender_name', 'sender_email', 'subject',
+        'received_at_raw', 'received_at_iso', 'received_at_local', 'body_text', 'ai_json', 'ai_status',
+        'ai_confidence', 'ai_error'
+      ];
+      EXCEL_HEADERS = [...baseHeaders, ...customColumns, 'created_at'];
+    } else {
+      EXCEL_HEADERS = [
+        'account_id', 'email', 'message_key', 'gmail_url', 'thread_url', 'sender_name', 'sender_email', 'subject',
+        'received_at_raw', 'received_at_iso', 'received_at_local', 'body_text', 'ai_json', 'ai_status',
+        'ai_confidence', 'ai_error', 'request_type', 'customer_name', 'phone', 'email_extracted', 'order_code',
+        'amount', 'currency', 'note', 'created_at'
+      ];
+    }
+
     console.log(chalk.yellow('\n--- THIẾT LẬP PHIÊN CHẠY ---'));
     const targetCountInput = await ask(`Bạn muốn lấy thêm bao nhiêu mail mỗi tài khoản? (Nhập số, hoặc 'all', hoặc 'exit' để thoát): `);
     
@@ -1044,7 +1067,9 @@ async function main() {
           workerData: {
             account,
             accountIndex: currentIndex,
-            forceProcess
+            forceProcess,
+            customPrompt,
+            customColumns
           }
         });
 
