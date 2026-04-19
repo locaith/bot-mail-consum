@@ -815,15 +815,107 @@ class GmailWebBot {
 
       await this.applySearchQuery();
 
-      const targets = await this.collectLatestEmailTargets();
-      if (!targets.length) {
+      const targetCount = this.account.maxEmails;
+      const onlyUnread = this.account.onlyUnread;
+      const rows = [];
+      const seenUrls = new Set();
+      let noGrowthRounds = 0;
+      let consecutiveFoundDuplicates = 0;
+
+      await this.log(`Bắt đầu thu thập tối đa ${targetCount} mail mới...`, 'info');
+
+      while (rows.length < targetCount && noGrowthRounds < 4) {
+        const batch = await this.page.evaluate(({ onlyUnread }) => {
+          const threadElements = Array.from(document.querySelectorAll('[data-thread-id], [data-legacy-thread-id], .zA, tr[role="row"]'));
+          const items = [];
+          const seenThreadIds = new Set();
+
+          for (const el of threadElements) {
+            const threadId = el.getAttribute('data-thread-id') || el.getAttribute('data-legacy-thread-id');
+            let row = el.closest('tr, div[role="row"], div[role="listitem"], .zA');
+            if (!row) continue;
+
+            const link = row.querySelector('a[href*="/"]');
+            let href = link ? link.getAttribute('href') : '';
+
+            if (!href && threadId) {
+              href = `#inbox/${threadId.replace('#thread-f:', '')}`;
+            }
+            if (!href) continue;
+
+            const uniqueId = threadId || href;
+            if (seenThreadIds.has(uniqueId)) continue;
+            seenThreadIds.add(uniqueId);
+
+            const unread = row.classList.contains('zE') ||
+              !!row.querySelector('span[aria-label*="Unread"], img[alt*="Unread"], div[aria-label*="Unread"], b') ||
+              (row.style.fontWeight === 'bold');
+
+            if (onlyUnread && !unread) continue;
+
+            const text = (row.innerText || '').replace(/\s+/g, ' ').trim();
+            const preview = text.split('\n').slice(0, 8).join(' | ');
+
+            items.push({ href, preview, unread });
+          }
+          return items;
+        }, { onlyUnread });
+
+        let newTargets = [];
+        for (const item of batch) {
+          const url = item.href.startsWith('http') ? item.href : `https://mail.google.com/mail/u/0/${item.href.replace(/^\//, '')}`;
+          if (!seenUrls.has(url)) {
+            seenUrls.add(url);
+            newTargets.push({ ...item, url });
+          }
+        }
+
+        if (newTargets.length === 0) {
+          noGrowthRounds++;
+          if (noGrowthRounds < 4) {
+            await this.page.mouse.wheel(0, 4000);
+            await this.randomDelay(1500, 2500);
+          }
+          continue;
+        }
+
+        noGrowthRounds = 0;
+
+        const chunks = chunkArray(newTargets, Math.max(1, this.account.mailConcurrency));
+        for (const chunk of chunks) {
+          const results = await Promise.allSettled(chunk.map(t => this.processSingleTarget(t)));
+          for (const result of results) {
+            if (result.status === 'fulfilled' && result.value) {
+              rows.push(result.value);
+              consecutiveFoundDuplicates = 0;
+              if (rows.length >= targetCount) break;
+            } else if (result.status === 'fulfilled' && result.value === null) {
+              consecutiveFoundDuplicates++;
+            } else if (result.status === 'rejected') {
+              await this.log(`Lỗi xử lý mail: ${result.reason.message}`, 'error');
+            }
+          }
+          if (rows.length >= targetCount) break;
+          await this.randomDelay(800, 1800);
+        }
+
+        if (rows.length >= targetCount) break;
+
+        await this.page.mouse.wheel(0, 4000);
+        await this.randomDelay(1500, 2500);
+
+        if (consecutiveFoundDuplicates > 500 && !workerData.forceProcess) {
+          await this.log(`Gặp quá nhiều mail đã xử lý liên tiếp (${consecutiveFoundDuplicates}), tự động dừng.`, 'warning');
+          break;
+        }
+      }
+
+      if (rows.length === 0) {
         await this.captureDebug('no-mails-found');
-        await this.log('Không tìm thấy mail nào phù hợp.', 'warning');
+        await this.log('Không thu thập được mail mới nào.', 'warning');
         return [];
       }
 
-      await this.log(`Đã thu thập ${targets.length} mail mục tiêu. Bắt đầu xử lý...`, 'info');
-      const rows = await this.processTargets(targets);
       await this.log(`Hoàn thành tài khoản. Mail mới ghi Excel: ${rows.length}`, 'success');
       return rows;
     } finally {
@@ -888,97 +980,105 @@ async function main() {
     return;
   }
 
-  // --- HIỆN TRẠNG THÁI ---
-  console.log(chalk.yellow('\n--- KIỂM TRA DỮ LIỆU ĐÃ CÓ ---'));
-  for (const acc of selectedAccounts) {
-    const stateFile = path.join(ROOT_DIR, 'state', `${acc.id}_processed.json`);
-    const state = safeJsonRead(stateFile, { keys: {} });
-    const count = Object.keys(state.keys).length;
-    console.log(chalk.gray(`[${acc.email}] Đã xử lý: ${count} mail.`));
-  }
-
-  // --- HỎI NGƯỜI DÙNG QUY TRÌNH ---
-  console.log(chalk.yellow('\n--- THIẾT LẬP PHIÊN CHẠY ---'));
-  const targetCountInput = await ask(`Bạn muốn lấy thêm bao nhiêu mail mỗi tài khoản? (Nhập số, hoặc 'all'): `);
-  const reprocessInput = await ask('Bạn có muốn xử lý lại các mail đã từng lấy không? (y/n): ');
-
-  const targetCount = targetCountInput.toLowerCase() === 'all' ? 9999 : (parseInt(targetCountInput) || 20);
-  const forceProcess = reprocessInput.toLowerCase() === 'y';
-
-  // Chạy ẩn trình duyệt theo mặc định
-  const runHeadless = true;
-  process.env.HEADLESS = 'true';
-
-  console.log(chalk.cyan(`\n[*] Sẽ lấy tối đa ${targetCount} mail mới.`));
-  console.log(chalk.cyan(`[*] Khử trùng: ${forceProcess ? 'Tắt (Lấy lại tất cả)' : 'Bật (Chỉ lấy mail chưa có)'}`));
-  console.log(chalk.cyan(`[*] Chế độ chạy: Ẩn trình duyệt (Mặc định)`));
-
-  const confirm = await ask(chalk.green('\nNhấn Enter để BẮT ĐẦU... '));
-
-  const excelWriter = new ExcelWriter(OUTPUT_EXCEL);
-  let currentIndex = 0;
-  const errors = [];
-
-  console.log(chalk.magenta('Đã sợ thì đừng dùng, đã dùng thì đừng sợ!'));
-  console.log(chalk.blue(`Số tài khoản được chọn: ${selectedAccounts.length}`));
-  console.log(chalk.blue(`Excel đầu ra: ${OUTPUT_EXCEL}`));
-
-  while (currentIndex < selectedAccounts.length) {
-    const workerPromises = [];
-    const batchSize = Math.min(MAX_ACCOUNT_THREADS, selectedAccounts.length - currentIndex);
-
-    for (let i = 0; i < batchSize; i++) {
-      const account = selectedAccounts[currentIndex];
-      // Override account maxEmails with user input
-      account.maxEmails = targetCount;
-
-      const worker = new Worker(__filename, {
-        workerData: {
-          account,
-          accountIndex: currentIndex,
-          forceProcess
-        }
-      });
-
-      workerPromises.push(new Promise(resolve => {
-        worker.on('message', async message => {
-          if (message.error) {
-            errors.push(`Tài khoản ${message.accountIndex + 1}: ${message.error}`);
-          } else if (message.rows && message.rows.length) {
-            await excelWriter.appendRows(message.rows);
-          }
-          resolve();
-        });
-
-        worker.on('error', error => {
-          errors.push(`Lỗi worker cho tài khoản ${currentIndex + 1}: ${error.message}`);
-          resolve();
-        });
-
-        worker.on('exit', code => {
-          if (code !== 0) {
-            errors.push(`Worker tài khoản ${currentIndex + 1} thoát với mã ${code}`);
-          }
-          resolve();
-        });
-      }));
-
-      currentIndex++;
+  while (true) {
+    // --- HIỆN TRẠNG THÁI ---
+    console.log(chalk.yellow('\n--- KIỂM TRA DỮ LIỆU ĐÃ CÓ ---'));
+    for (const acc of selectedAccounts) {
+      const stateFile = path.join(ROOT_DIR, 'state', `${acc.id}_processed.json`);
+      const state = safeJsonRead(stateFile, { keys: {} });
+      const count = Object.keys(state.keys).length;
+      console.log(chalk.gray(`[${acc.email}] Đã xử lý: ${count} mail.`));
     }
 
-    await Promise.all(workerPromises);
-
-    if (currentIndex < selectedAccounts.length) {
-      await countdown(3);
+    // --- HỎI NGƯỜI DÙNG QUY TRÌNH ---
+    console.log(chalk.yellow('\n--- THIẾT LẬP PHIÊN CHẠY ---'));
+    const targetCountInput = await ask(`Bạn muốn lấy thêm bao nhiêu mail mỗi tài khoản? (Nhập số, hoặc 'all', hoặc 'exit' để thoát): `);
+    
+    if (targetCountInput.toLowerCase() === 'exit') {
+      console.log(chalk.green('Thoát chương trình.'));
+      break;
     }
-  }
+    
+    const reprocessInput = await ask('Bạn có muốn xử lý lại các mail đã từng lấy không? (y/n): ');
 
-  if (errors.length > 0) {
-    console.log(chalk.red('================= DANH SÁCH LỖI ================='));
-    errors.forEach(error => console.log(chalk.red(error)));
-  }
+    const targetCount = targetCountInput.toLowerCase() === 'all' ? 9999 : (parseInt(targetCountInput) || 20);
+    const forceProcess = reprocessInput.toLowerCase() === 'y';
 
-  console.log(chalk.green('Hoàn tất toàn bộ tiến trình.'));
+    // Chạy ẩn trình duyệt theo mặc định
+    const runHeadless = true;
+    process.env.HEADLESS = 'true';
+
+    console.log(chalk.cyan(`\n[*] Sẽ lấy tối đa ${targetCount} mail mới.`));
+    console.log(chalk.cyan(`[*] Khử trùng: ${forceProcess ? 'Tắt (Lấy lại tất cả)' : 'Bật (Chỉ lấy mail chưa có)'}`));
+    console.log(chalk.cyan(`[*] Chế độ chạy: Ẩn trình duyệt (Mặc định)`));
+
+    const confirm = await ask(chalk.green('\nNhấn Enter để BẮT ĐẦU... '));
+
+    const excelWriter = new ExcelWriter(OUTPUT_EXCEL);
+    let currentIndex = 0;
+    const errors = [];
+
+    console.log(chalk.magenta('Đã sợ thì đừng dùng, đã dùng thì đừng sợ!'));
+    console.log(chalk.blue(`Số tài khoản được chọn: ${selectedAccounts.length}`));
+    console.log(chalk.blue(`Excel đầu ra: ${OUTPUT_EXCEL}`));
+
+    while (currentIndex < selectedAccounts.length) {
+      const workerPromises = [];
+      const batchSize = Math.min(MAX_ACCOUNT_THREADS, selectedAccounts.length - currentIndex);
+
+      for (let i = 0; i < batchSize; i++) {
+        const account = selectedAccounts[currentIndex];
+        // Override account maxEmails with user input
+        account.maxEmails = targetCount;
+
+        const worker = new Worker(__filename, {
+          workerData: {
+            account,
+            accountIndex: currentIndex,
+            forceProcess
+          }
+        });
+
+        workerPromises.push(new Promise(resolve => {
+          worker.on('message', async message => {
+            if (message.error) {
+              errors.push(`Tài khoản ${message.accountIndex + 1}: ${message.error}`);
+            } else if (message.rows && message.rows.length) {
+              await excelWriter.appendRows(message.rows);
+            }
+            resolve();
+          });
+
+          worker.on('error', error => {
+            errors.push(`Lỗi worker cho tài khoản ${currentIndex + 1}: ${error.message}`);
+            resolve();
+          });
+
+          worker.on('exit', code => {
+            if (code !== 0) {
+              errors.push(`Worker tài khoản ${currentIndex + 1} thoát với mã ${code}`);
+            }
+            resolve();
+          });
+        }));
+
+        currentIndex++;
+      }
+
+      await Promise.all(workerPromises);
+
+      if (currentIndex < selectedAccounts.length) {
+        await countdown(3);
+      }
+    }
+
+    if (errors.length > 0) {
+      console.log(chalk.red('================= DANH SÁCH LỖI ================='));
+      errors.forEach(error => console.log(chalk.red(error)));
+    }
+
+    console.log(chalk.green('Hoàn tất toàn bộ tiến trình vòng này. Chuẩn bị lặp lại...'));
+  }
 }
 
 if (isMainThread) {
