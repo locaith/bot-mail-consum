@@ -500,72 +500,78 @@ class GmailWebBot {
     return targets.slice(0, targetCount);
   }
 
-  async extractMailDetailFromNewPage(target) {
-    const detailPage = await this.browserContext.newPage();
-    detailPage.setDefaultTimeout(30000);
+  async extractMailDetailFromNewPage(target, retries = 3) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      let detailPage;
+      try {
+        detailPage = await this.browserContext.newPage();
+        detailPage.setDefaultTimeout(30000);
 
-    try {
-      await detailPage.goto(target.url, { waitUntil: 'domcontentloaded' });
-      // Đợi DOM của nội dung email load thành công để tránh lỗi cào nhầm giao diện loading có text "Tìm kiếm"
-      await detailPage.waitForSelector('h2.hP, div.a3s', { state: 'attached', timeout: 20000 }).catch(() => {});
-      await this.randomDelay(1200, 2500);
+        await detailPage.goto(target.url, { waitUntil: 'domcontentloaded' });
+        // Đợi DOM của nội dung email load thành công để tránh lỗi cào nhầm giao diện loading có text "Tìm kiếm"
+        await detailPage.waitForSelector('h2.hP, div.a3s', { state: 'attached', timeout: 20000 }).catch(() => {});
+        await this.randomDelay(1200, 2500);
 
-      const detail = await detailPage.evaluate(() => {
-        function textOfLast(selectorList) {
-          for (const selector of selectorList) {
-            const els = document.querySelectorAll(selector);
-            if (els.length > 0) {
-              for (let i = els.length - 1; i >= 0; i--) {
-                const text = (els[i].textContent || '').replace(/\s+/g, ' ').trim();
-                if (text) return text;
+        const detail = await detailPage.evaluate(() => {
+          function textOfLast(selectorList) {
+            for (const selector of selectorList) {
+              const els = document.querySelectorAll(selector);
+              if (els.length > 0) {
+                for (let i = els.length - 1; i >= 0; i--) {
+                  const text = (els[i].textContent || '').replace(/\s+/g, ' ').trim();
+                  if (text) return text;
+                }
               }
             }
+            return '';
           }
-          return '';
-        }
 
-        function attrOfLast(selectorList, attr) {
-          for (const selector of selectorList) {
-            const els = document.querySelectorAll(selector);
-            if (els.length > 0) {
-              for (let i = els.length - 1; i >= 0; i--) {
-                const value = els[i].getAttribute(attr);
-                if (value) return value;
+          function attrOfLast(selectorList, attr) {
+            for (const selector of selectorList) {
+              const els = document.querySelectorAll(selector);
+              if (els.length > 0) {
+                for (let i = els.length - 1; i >= 0; i--) {
+                  const value = els[i].getAttribute(attr);
+                  if (value) return value;
+                }
               }
             }
+            return '';
           }
-          return '';
-        }
 
-        const subject = textOfLast(['h2.hP', 'h2[data-thread-perm-id]']);
-        const senderName = textOfLast(['span.gD', 'h3.iw span[email]', 'span[email]']);
-        const senderEmail = attrOfLast(['span.gD[email]', 'span[email]'], 'email') || textOfLast(['span[email]']);
-        const rawTimestamp = attrOfLast(['span.g3[title]', 'span[title][class*="g3"]'], 'title') || textOfLast(['span.g3', 'span[title][class*="g3"]', 'time']);
+          const subject = textOfLast(['h2.hP', 'h2[data-thread-perm-id]']);
+          const senderName = textOfLast(['span.gD', 'h3.iw span[email]', 'span[email]']);
+          const senderEmail = attrOfLast(['span.gD[email]', 'span[email]'], 'email') || textOfLast(['span[email]']);
+          const rawTimestamp = attrOfLast(['span.g3[title]', 'span[title][class*="g3"]'], 'title') || textOfLast(['span.g3', 'span[title][class*="g3"]', 'time']);
 
-        let body = '';
-        const bodyNodes = Array.from(document.querySelectorAll('div.a3s.aiL, div.a3s, div[role="listitem"] div[dir="auto"]'));
-        if (bodyNodes.length > 0) {
-          // Lấy nội dung của message cuối cùng (mới nhất trong thread)
-          body = (bodyNodes[bodyNodes.length - 1].innerText || '').replace(/\s+/g, ' ').trim();
-        }
+          let body = '';
+          const bodyNodes = Array.from(document.querySelectorAll('div.a3s.aiL, div.a3s, div[role="listitem"] div[dir="auto"]'));
+          if (bodyNodes.length > 0) {
+            // Lấy nội dung của message cuối cùng (mới nhất trong thread)
+            body = (bodyNodes[bodyNodes.length - 1].innerText || '').replace(/\s+/g, ' ').trim();
+          }
 
-        if (!body) {
-          body = (document.body.innerText || '').replace(/\s+/g, ' ').trim();
-        }
+          if (!body) {
+            body = (document.body.innerText || '').replace(/\s+/g, ' ').trim();
+          }
 
-        return {
-          subject,
-          senderName,
-          senderEmail,
-          rawTimestamp,
-          body,
-          pageUrl: location.href
-        };
-      });
+          return {
+            subject,
+            senderName,
+            senderEmail,
+            rawTimestamp,
+            body,
+            pageUrl: location.href
+          };
+        });
 
-      return detail;
-    } finally {
-      await detailPage.close().catch(() => { });
+        await detailPage.close().catch(() => { });
+        return detail;
+      } catch (error) {
+        if (detailPage) await detailPage.close().catch(() => {});
+        if (attempt === retries) throw error;
+        await this.randomDelay(2000, 4000);
+      }
     }
   }
 
@@ -792,12 +798,15 @@ class GmailWebBot {
     const rows = [];
 
     for (const chunk of chunks) {
+      if (chunk.length > 1) {
+         await this.log(`Đang chạy song song cào ${chunk.length} mail cùng lúc (Mở ${chunk.length} tab)...`, 'info');
+      }
       const results = await Promise.allSettled(chunk.map(target => this.processSingleTarget(target)));
       for (const result of results) {
         if (result.status === 'fulfilled' && result.value) {
           rows.push(result.value);
         } else if (result.status === 'rejected') {
-          await this.log(`Lỗi xử lý mail: ${result.reason.message}`, 'error');
+          await this.log(`Lỗi xử lý mail: ${result.reason.message || result.reason}`, 'error');
         }
       }
       await this.randomDelay(800, 1800);
