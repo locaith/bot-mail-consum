@@ -506,6 +506,8 @@ class GmailWebBot {
 
     try {
       await detailPage.goto(target.url, { waitUntil: 'domcontentloaded' });
+      // Đợi DOM của nội dung email load thành công để tránh lỗi cào nhầm giao diện loading có text "Tìm kiếm"
+      await detailPage.waitForSelector('h2.hP, div.a3s', { state: 'attached', timeout: 20000 }).catch(() => {});
       await this.randomDelay(1200, 2500);
 
       const detail = await detailPage.evaluate(() => {
