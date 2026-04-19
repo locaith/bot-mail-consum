@@ -821,7 +821,7 @@ class GmailWebBot {
 
       await this.applySearchQuery();
       // Đảm bảo DOM load xong kết quả
-      await this.page.waitForSelector('.zA', { state: 'attached', timeout: 15000 }).catch(() => {});
+      await this.page.waitForSelector('[data-thread-id], .zA', { state: 'attached', timeout: 15000 }).catch(() => {});
 
       const targetCount = this.account.maxEmails;
       const onlyUnread = this.account.onlyUnread;
@@ -834,8 +834,8 @@ class GmailWebBot {
 
       while (rows.length < targetCount && noGrowthRounds < 4) {
         const batch = await this.page.evaluate(({ onlyUnread }) => {
-          // Chỉ gom tr.zA để không trúng nhầm các nút UI như Tìm kiếm
-          const threadElements = Array.from(document.querySelectorAll('.zA, tr.zA'));
+          // Bắt các row email có ID nhóm (data-thread-id) để tránh bị nhầm với element gợi ý tìm kiếm
+          const threadElements = Array.from(document.querySelectorAll('tr[data-thread-id], tr[data-legacy-thread-id], div[data-thread-id], div[data-legacy-thread-id], span[data-thread-id], .zA'));
           const items = [];
           const seenThreadIds = new Set();
 
