@@ -537,7 +537,7 @@ class GmailWebBot {
           return '';
         }
 
-        const subject = textOfLast(['h2.hP', 'h2[data-thread-perm-id]', 'h2']);
+        const subject = textOfLast(['h2.hP', 'h2[data-thread-perm-id]']);
         const senderName = textOfLast(['span.gD', 'h3.iw span[email]', 'span[email]']);
         const senderEmail = attrOfLast(['span.gD[email]', 'span[email]'], 'email') || textOfLast(['span[email]']);
         const rawTimestamp = attrOfLast(['span.g3[title]', 'span[title][class*="g3"]'], 'title') || textOfLast(['span.g3', 'span[title][class*="g3"]', 'time']);
@@ -735,7 +735,7 @@ class GmailWebBot {
     const messageKey = this.buildMessageKey(detail);
 
     if (this.processed.keys[messageKey] && !workerData.forceProcess) {
-      await this.log(`Bỏ qua mail trùng: ${detail.subject || target.preview}`, 'warning');
+      await this.log(`Bỏ qua mail trùng: ${target.preview}`, 'warning');
       return null;
     }
 
@@ -782,7 +782,7 @@ class GmailWebBot {
     };
 
     this.saveProcessed();
-    await this.log(`Đã xử lý mail: ${row.subject || target.preview}`, ai.ai_status === 'success' ? 'success' : 'warning');
+    await this.log(`Đã xử lý mail: ${target.preview}`, ai.ai_status === 'success' ? 'success' : 'warning');
     return row;
   }
 
