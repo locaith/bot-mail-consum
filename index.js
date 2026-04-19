@@ -24,7 +24,7 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
 const INTRO_NAME = process.env.INTRO_NAME || 'dev Ha';
 
 let EXCEL_HEADERS = [
-  'account_id', 'email', 'message_key', 'gmail_url', 'thread_url', 'sender_name', 'sender_email', 'subject',
+  'account_id', 'email', 'sender_email', 'subject',
   'received_at_raw', 'received_at_iso', 'received_at_local', 'body_text', 'ai_json', 'ai_status',
   'ai_confidence', 'ai_error', 'request_type', 'customer_name', 'phone', 'email_extracted', 'order_code',
   'amount', 'currency', 'note', 'created_at'
@@ -1050,27 +1050,16 @@ async function main() {
     }
 
     // --- HỎI NGƯỜI DÙNG QUY TRÌNH ---
-    console.log(chalk.yellow('\n--- THIẾT LẬP AI VÀ EXCEL ---'));
+    console.log(chalk.yellow('\n--- THIẾT LẬP AI ---'));
     let customPrompt = await ask(`Bạn muốn AI lọc thông tin gì? (Ví dụ: 'tập trung lấy mã OTP', để trống = chạy mặc định): `);
-    let colsInput = await ask(`Bạn muốn tạo các cột Excel nào? (Nhập tên cột, cách nhau bằng dấu phẩy. Vd: 'NganHang, SoTien'. Để trống = mặc định): `);
-    
     let customColumns = [];
-    if (colsInput.trim()) {
-      customColumns = colsInput.split(',').map(c => cleanText(c).replace(/[^a-zA-Z0-9_\u0080-\uFFFF]/g, '')).filter(Boolean);
-      const baseHeaders = [
-        'account_id', 'email', 'message_key', 'gmail_url', 'thread_url', 'sender_name', 'sender_email', 'subject',
-        'received_at_raw', 'received_at_iso', 'received_at_local', 'body_text', 'ai_json', 'ai_status',
-        'ai_confidence', 'ai_error'
-      ];
-      EXCEL_HEADERS = [...baseHeaders, ...customColumns, 'created_at'];
-    } else {
-      EXCEL_HEADERS = [
-        'account_id', 'email', 'message_key', 'gmail_url', 'thread_url', 'sender_name', 'sender_email', 'subject',
-        'received_at_raw', 'received_at_iso', 'received_at_local', 'body_text', 'ai_json', 'ai_status',
-        'ai_confidence', 'ai_error', 'request_type', 'customer_name', 'phone', 'email_extracted', 'order_code',
-        'amount', 'currency', 'note', 'created_at'
-      ];
-    }
+
+    EXCEL_HEADERS = [
+      'account_id', 'email', 'sender_email', 'subject',
+      'received_at_raw', 'received_at_iso', 'received_at_local', 'body_text', 'ai_json', 'ai_status',
+      'ai_confidence', 'ai_error', 'request_type', 'customer_name', 'phone', 'email_extracted', 'order_code',
+      'amount', 'currency', 'note', 'created_at'
+    ];
 
     console.log(chalk.yellow('\n--- THIẾT LẬP PHIÊN CHẠY ---'));
     const targetCountInput = await ask(`Bạn muốn lấy thêm bao nhiêu mail mỗi tài khoản? (Nhập số, hoặc 'all', hoặc 'exit' để thoát): `);
