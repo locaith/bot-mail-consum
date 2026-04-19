@@ -107,12 +107,12 @@ function banner() {
 
 function loadAccounts() {
   if (!fileExists(ACCOUNTS_FILE)) {
-    throw new Error(`Không tìm thấy ${ACCOUNTS_FILE}. Hãy tạo từ accounts.sample.json`);
+    return [];
   }
 
   const accounts = safeJsonRead(ACCOUNTS_FILE, []);
   if (!Array.isArray(accounts) || accounts.length === 0) {
-    throw new Error('accounts.json rỗng hoặc sai định dạng.');
+    return [];
   }
 
   return accounts.map(account => ({
@@ -973,16 +973,65 @@ async function countdown(seconds) {
   console.log('');
 }
 
+async function handleAddAccountFlow(existingAccounts) {
+  const newEmail = await ask('Nhập địa chỉ email Gmail (Ví dụ: test@gmail.com): ');
+  if (!newEmail.trim()) return existingAccounts;
+
+  const id = newEmail.split('@')[0].replace(/[^a-zA-Z0-9]/g, '_');
+  const newAcc = {
+    id: id,
+    email: newEmail.trim(),
+    maxEmails: 50,
+    mailConcurrency: 10,
+    profileDir: `./profiles/${id}`,
+    gmailUrl: 'https://mail.google.com/mail/u/0/#inbox',
+    enabled: true,
+    onlyUnread: false,
+    query: '',
+    proxy: ''
+  };
+  
+  existingAccounts.push(newAcc);
+  safeJsonWrite(ACCOUNTS_FILE, existingAccounts);
+  console.log(chalk.green(`\nĐã thêm tài khoản: ${newEmail}. Đang mở tiến trình Chrome duyệt để bạn đăng nhập lần đầu...`));
+  
+  await setupMode([newAcc]);
+  return loadAccounts();
+}
+
 async function main() {
   banner();
   ensureDir(path.join(ROOT_DIR, 'state'));
   ensureDir(path.dirname(OUTPUT_EXCEL));
 
-  const accounts = loadAccounts();
+  let accounts = loadAccounts();
+
+  if (accounts.length === 0) {
+    console.log(chalk.yellow('\nChưa có tài khoản nào được cấu hình trong accounts.json.'));
+    const addInput = await ask('Bạn có muốn thêm cấu hình và đăng nhập tài khoản Gmail mới để bắt đầu không? (y/n): ');
+    if (addInput.toLowerCase() === 'y') {
+       accounts = await handleAddAccountFlow(accounts);
+    } else {
+       console.log(chalk.red('Không thể tiếp tục mà không có tài khoản.'));
+       process.exit(1);
+    }
+  } else {
+    console.log(chalk.cyan('\n--- TÀI KHOẢN HIỆN TẠI ---'));
+    accounts.forEach((acc, i) => {
+       console.log(chalk.cyan(`  ${i+1}. ${acc.email} (Trạng thái: ${acc.enabled ? 'Bật' : 'Tắt'})`));
+    });
+    
+    const addMore = await ask('\nBạn có muốn thêm tài khoản Gmail mới không? (y/n - hoặc bỏ trống để bỏ qua): ');
+    if (addMore.toLowerCase() === 'y') {
+       accounts = await handleAddAccountFlow(accounts);
+    }
+  }
+
   const selectedAccounts = loadSelectedAccounts(accounts);
 
   if (!selectedAccounts.length) {
-    throw new Error('Không có tài khoản nào được chọn để chạy.');
+    console.log(chalk.red('Không có tài khoản nào được bật để chạy. Vui lòng kiểm tra accounts.json.'));
+    process.exit(1);
   }
 
   if (process.argv.includes('--setup')) {
