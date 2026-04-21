@@ -1501,8 +1501,23 @@ async function main() {
   if (modeInput.trim() === '1') {
     console.log(chalk.yellow('\n--- THIẾT LẬP AI WEB AGENT ---'));
     let url = await ask('1. Nhập URL trang web muốn cào (Ví dụ: https://unisetu.com): ');
-    let task = await ask('2. Bạn muốn AI trích xuất gì? (Ví dụ: Lọc tên khóa học, học phí...): ');
-    let cols = await ask('3. Tên cột xuất Excel (Ví dụ: TenKhoaHoc, HocPhi, ThoiGian): ');
+    
+    console.log(chalk.cyan('\n  [CHỌN MẪU DỮ LIỆU ĐẦU RA]'));
+    console.log(chalk.white('   1. Dữ liệu tư vấn du học (Siêu chi tiết: Ngành học, Yêu cầu đầu vào, Học bổng, Học phí, Rank)'));
+    console.log(chalk.white('   2. Nhập tay tùy chỉnh (Tự nhập Cột và Cấu hình yêu cầu)'));
+    let preset = await ask('=> Chọn (1 hoặc 2. Nhấn Enter để chọn 1): ');
+    
+    let task = '';
+    let cols = '';
+    
+    if (preset.trim() === '' || preset.trim() === '1') {
+       task = 'Hãy đi sâu vào chi tiết lấy TOÀN BỘ thông tin của các trường. Nhiệm vụ để giúp công ty Tư vấn xuất khẩu và du học. Phải thu thập TẤT CẢ các hệ đào tạo (Undergraduate, Graduate), danh sách cụ thể các ngành đào tạo (như Business Analytics, IT...) và các quỹ học bổng của trường. BẮT BUỘC CLICK vào từng trường trên danh sách -> Chờ trang con load -> EXTRACT dữ liệu -> Dùng lệnh GO_BACK để quay về -> Click trường tiếp theo.';
+       cols = 'Phân loại, TRƯỜNG, RANK, Quốc gia, Thành phố, Các Hệ Tuyển Sinh, Các ngành đào tạo chi tiết, Điều kiện GPA, Điều kiện IELTS, Học phí đại học, Học bổng min, Học bổng max, Phí sinh hoạt, WEBSITE';
+       console.log(chalk.green(`\n[+] ĐÃ LOAD CẤU HÌNH Tư Vấn Du Học Chi Tiết.`));
+    } else {
+       task = await ask('2. Bạn muốn AI phân tích và làm gì? (Yêu cầu rõ ràng): ');
+       cols = await ask('3. Bạn muốn xuất ra File Excel Tên Cột gì? (VD: TenKhoaHoc, Truong, HocPhi...): ');
+    }
     
     if (url && !url.startsWith('http')) url = 'https://' + url;
 
