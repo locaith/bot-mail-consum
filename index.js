@@ -1273,70 +1273,178 @@ async function runUniversalAgent(targetUrl, taskPrompt, colsInput) {
   }
 
   console.log(chalk.magenta('\n======================================================'));
-  console.log(chalk.green('🌐 TRÌNH DUYỆT AGENT ĐÃ MỞ!'));
-  console.log(chalk.white('1. Quý khách vui lòng tương tác trên trình duyệt (Đăng nhập, tìm kiếm...).'));
-  console.log(chalk.white('2. Load trang có chứa dữ liệu cần lấy.'));
+  console.log(chalk.green('🚀 AUTO AI WEB AGENT ĐÃ KÍCH HOẠT!'));
+  console.log(chalk.white('Trình duyệt rảnh tay: AI sẽ phân tích và điều khiển!'));
   console.log(chalk.magenta('======================================================\n'));
 
+  let chatHistory = {
+    contents: [
+      {
+        role: "user",
+        parts: [{
+          text: `Bạn là một Chuyên gia Cào dữ liệu (AI Web Scraper). Người dùng yêu cầu: "${taskPrompt}".
+Các cột Excel cần trích xuất: ${customColumns.join(', ')}.
+
+Bạn sẽ được cấp nội dung text của trang web và danh sách các phần tử tương tác (button, link, input) kèm theo ID [xyz].
+Nhiệm vụ của bạn là suy nghĩ xem nên làm gì tiếp theo để đạt được mục tiêu của người dùng.
+
+BẠN CHỈ ĐƯỢC PHÉP TRẢ VỀ ĐÚNG 1 STRING JSON HỢP LỆ (Không định dạng markdown xung quanh block), theo cấu trúc:
+{
+  "thought": "Suy luận của bạn (Ví dụ: Trang web có bộ lọc Quốc gia, tôi nên hỏi người dùng muốn lấy quốc gia nào)",
+  "action": "ASK_USER" | "CLICK" | "TYPE" | "EXTRACT" | "WAIT",
+  "element_id": 123, 
+  "value": "Nếu hành động là TYPE, điền chữ muốn gõ. Nếu hành động là ASK_USER, điền câu hỏi để hỏi người dùng",
+  "extracted_data": [ ... mảng JSON các object theo đúng tên cột, nếu action là EXTRACT ]
+}
+Lưu ý "element_id" phải là một số nguyên (number), nếu không có thì để null.
+
+Nguyên tắc:
+- Hãy sử dụng ASK_USER nếu bạn không chắc chắn người dùng muốn lọc theo tiêu chí nào (Quốc gia, Ngành học...), hoặc nếu cần người dùng vượt captcha/đăng nhập.
+- Hãy dùng EXTRACT khi bảng dữ liệu đã hiển thị đầy đủ trên màn hình.
+- Sau khi EXTRACT xong 1 trang, nếu có nút "Trang sau/Next Page", hãy CLICK để sang trang mới.`
+        }]
+      },
+      {
+        role: "model",
+        parts: [{ text: `{"thought": "Đã hiểu nhiệm vụ, tôi đã sẵn sàng.", "action": "WAIT"}` }]
+      }
+    ]
+  };
+
   while (true) {
-    const action = await ask(chalk.yellow(`Nhấn ENTER để cào dữ liệu trên trang hiện tại (hoặc gõ 'exit' để thoát): `));
-    if (action.toLowerCase() === 'exit') break;
-
-    console.log(chalk.cyan('\n[*] Đang đọc nội dung trang web...'));
-    const pageText = await page.evaluate(() => document.body.innerText);
-    const currentUrl = page.url();
-
-    console.log(chalk.cyan(`[*] Khối lượng dữ liệu: ${pageText.length} ký tự. Đang gửi cho AI phân tích...`));
+    console.log(chalk.cyan(`\n[*] Agent đang phân tích trang web (${page.url()})...`));
     
-    let dynamicSchemaObj = {};
-    customColumns.forEach(c => dynamicSchemaObj[c] = typeof c === 'string' ? '' : '');
-    const schemaStr = JSON.stringify([dynamicSchemaObj], null, 2);
+    const domSnapshot = await page.evaluate(() => {
+        let counter = 1;
+        let interactables = [];
+        
+        document.querySelectorAll('a, button, input, select, [role="button"], [role="link"], [role="checkbox"]').forEach(el => {
+            const rect = el.getBoundingClientRect();
+            // Lọc ra các phần tử thực sự hiển thị trên màn hình hiện tại
+            if (rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.top <= window.innerHeight + 500) {
+                const text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+                if (text || el.tagName.toLowerCase() === 'input') {
+                    el.setAttribute('data-ai-id', counter);
+                    interactables.push(`[${counter}] ${el.tagName}: ${text.substring(0, 40)}`);
+                    counter++;
+                }
+            }
+        });
 
-    const prompt = [
-      `Bạn là một Data Engineer cào dữ liệu website. Người dùng yêu cầu: ${taskPrompt}`,
-      'Trích xuất tất cả các thông tin khớp với yêu cầu từ văn bản dưới đây và trả về DƯỚI DẠNG DANH SÁCH JSON (Array of Objects).',
-      'CHỈ trả về mảng JSON hợp lệ, bắt buộc dùng schema dưới đây, không markdown, không giải thích.',
-      schemaStr,
-      `Nội dung web:`,
-      pageText.substring(0, 150000)
-    ].join('\n');
+        return {
+           url: location.href,
+           interactables: interactables.join('\n'),
+           text: document.body.innerText.replace(/\s+/g, ' ').substring(0, 40000)
+        };
+    });
+
+    const userPrompt = `--- TRẠNG THÁI HIỆN TẠI ---
+URL: ${domSnapshot.url}
+
+CÁC PHẦN TỬ TƯƠNG TÁC (Có ID):
+${domSnapshot.interactables || '(Không có)'}
+
+VĂN BẢN TRÊN TRANG (Trích xuất để lấy dữ liệu):
+${domSnapshot.text}
+
+Hãy phản hồi bằng đúng 1 object JSON chứa quyết định hành động tiếp theo của bạn.`;
+
+    chatHistory.contents.push({ role: "user", parts: [{ text: userPrompt }] });
+
+    // Giữ cho context window không quá dài để tránh lỗi Gemini Payload Too Large
+    if (chatHistory.contents.length > 20) {
+       chatHistory.contents.splice(2, 2); // Cắt bớt lịch sử giữa chừng, giữ lại prompt gốc
+    }
 
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
       const response = await axios.post(url, {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+        contents: chatHistory.contents,
+        generationConfig: { temperature: 0.1 }
       }, { timeout: 120000, headers: { 'Content-Type': 'application/json' } });
 
-      const text = response?.data?.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('') || '[]';
-      let parsed = [];
+      const replyText = response?.data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+      chatHistory.contents.push({ role: "model", parts: [{ text: replyText }] });
+
+      let aiAction = {};
       try {
-        const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
-        if (jsonMatch) parsed = JSON.parse(jsonMatch[1]);
-        else parsed = JSON.parse(text);
+         const jsonMatch = replyText.match(/```json\n([\s\S]*?)\n```/) || replyText.match(/```\n([\s\S]*?)\n```/);
+         if (jsonMatch) aiAction = JSON.parse(jsonMatch[1]);
+         else {
+             const cleaned = replyText.substring(replyText.indexOf('{'), replyText.lastIndexOf('}') + 1);
+             aiAction = JSON.parse(cleaned);
+         }
       } catch (e) {
-        parsed = [];
+         console.log(chalk.red(`[!] AI trả lời không chuẩn JSON. Cố gắng thử lại vòng lặp sau... (Lỗi Parse)`));
+         chatHistory.contents.push({ role: "user", parts: [{ text: "Phản hồi trước đó không phải JSON hợp lệ. BẮT BUỘC trả về duy nhất 1 JSON object."}] });
+         continue;
       }
 
-      if (!Array.isArray(parsed)) {
-        if (typeof parsed === 'object') parsed = [parsed];
-        else parsed = [];
+      console.log(chalk.yellow(`\n[🧠 Agent Nghĩ]: ${aiAction.thought}`));
+
+      if (aiAction.action === 'ASK_USER') {
+         const answer = await ask(chalk.green(`[🤖 Agent Hỏi]: ${aiAction.value}\n=> (Bạn Gõ): `));
+         chatHistory.contents.push({ role: "user", parts: [{ text: `Câu trả lời từ người dùng: ${answer}` }] });
+         if (answer.toLowerCase() === 'exit') break;
+      } 
+      else if (aiAction.action === 'CLICK') {
+         console.log(chalk.cyan(`[👉 Agent Click]: Click vào phần tử số [${aiAction.element_id}]`));
+         const elHandle = await page.$(`[data-ai-id="${aiAction.element_id}"]`);
+         if (elHandle) {
+             await elHandle.scrollIntoViewIfNeeded().catch(()=>{});
+             await elHandle.click({ force: true }).catch(err => console.log(chalk.red(`Lỗi click: ${err.message}`)));
+             await sleep(2500); // Chờ hiệu ứng UI cập nhật
+         } else {
+             console.log(chalk.red(`[!] Không tìm thấy phần tử [${aiAction.element_id}] để click.`));
+             chatHistory.contents.push({ role: "user", parts: [{ text: `Phần tử ID [${aiAction.element_id}] không tồn tại trên màn hình. Hãy chọn thao tác khác.`}] });
+         }
       }
+      else if (aiAction.action === 'TYPE') {
+         console.log(chalk.cyan(`[⌨️ Agent Gõ]: Gõ "${aiAction.value}" vào phần tử số [${aiAction.element_id}]`));
+         const elHandle = await page.$(`[data-ai-id="${aiAction.element_id}"]`);
+         if (elHandle) {
+             await elHandle.scrollIntoViewIfNeeded().catch(()=>{});
+             await elHandle.fill(aiAction.value || '').catch(()=>{});
+             await sleep(1000);
+             await page.keyboard.press('Enter').catch(()=>{}); // Mô phỏng gõ Enter sau khi nhập
+             await sleep(2000);
+         } else {
+             chatHistory.contents.push({ role: "user", parts: [{ text: `Phần tử ID [${aiAction.element_id}] không tồn tại trên màn hình.`}] });
+         }
+      }
+      else if (aiAction.action === 'EXTRACT') {
+         const data = aiAction.extracted_data || [];
+         if (data.length > 0) {
+            console.log(chalk.green(`[+] AI đã trích xuất thành công ${data.length} dòng dữ liệu!`));
+            const now = DateTime.now().setZone(TIMEZONE).toISO();
+            data.forEach(item => {
+               const rowData = customColumns.map(c => escapeFormula(item[c] ?? ''));
+               rowData.push(page.url(), now);
+               sheet.addRow(rowData);
+            });
+            await workbook.xlsx.writeFile(outFile);
+            console.log(chalk.green(`[+] Đã lưu vào ${outFile}`));
+         } else {
+            console.log(chalk.yellow(`[-] Lệnh EXTRACT nhưng mảng dữ liệu trả về rỗng.`));
+         }
 
-      console.log(chalk.green(`[+] AI đã tìm thấy ${parsed.length} dòng dữ liệu.`));
-      
-      const now = DateTime.now().setZone(TIMEZONE).toISO();
-      parsed.forEach(item => {
-        const rowData = customColumns.map(c => escapeFormula(item[c] ?? ''));
-        rowData.push(currentUrl, now);
-        sheet.addRow(rowData);
-      });
-
-      await workbook.xlsx.writeFile(outFile);
-      console.log(chalk.green(`[+] Đã lưu vào ${outFile}`));
+         const isContinue = await ask(chalk.green(`\nAgent vừa EXTRACT xong. Nhấn Enter để Agent TỰ ĐỘNG làm tiếp (Tìm nút Next Page), hoặc gõ 'exit' để dừng: `));
+         if (isContinue.toLowerCase() === 'exit') break;
+         chatHistory.contents.push({ role: "user", parts: [{ text: "Đã trích xuất và lưu xong. Hãy click sang tiếp trang sau hoặc thực hiện hành động tiếp theo." }] });
+      }
+      else if (aiAction.action === 'WAIT') {
+         console.log(chalk.gray(`[⏳ Agent Chờ]: Đang đợi trang web load/phản hồi...`));
+         await sleep(3000);
+      }
+      else {
+         console.log(chalk.red(`[!] Agent Không Hiểu Lệnh: Hành động không hợp lệ -> ${aiAction.action}`));
+         chatHistory.contents.push({ role: "user", parts: [{ text: `Hành động ${aiAction.action} không hợp lệ. Chỉ chọn ASK_USER, CLICK, TYPE, EXTRACT, hoặc WAIT.` }] });
+         await sleep(2000);
+      }
 
     } catch (error) {
-      console.log(chalk.red(`[-] Gặp lỗi khi gọi AI: ${error.message}`));
+       console.log(chalk.red(`[-] Lỗi hệ thống khi gọi AI: ${error.message}`));
+       await sleep(3000);
     }
   }
 
