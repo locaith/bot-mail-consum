@@ -1300,7 +1300,7 @@ Lưu ý "element_id" phải là một số nguyên (number), nếu không có th
 
 Nguyên tắc:
 - BẠN CÓ MẮT LÀ ẢNH CHỤP MÀN HÌNH: Hãy quan sát ảnh để xem các Select box đã mở chưa. Bạn là người điều khiển trang (dựa vào hình ảnh thực tế).
-- BẢN ĐỒ DOM: Các thẻ `A` đều có nội dung đường link (href), hãy ưu tiên các link vào trang web chính xác thay vì quảng cáo.
+- BẢN ĐỒ DOM: Các thẻ 'A' (Link) đều có nội dung đường link (href), hãy ưu tiên các link vào trang web chính xác thay vì quảng cáo.
 - NÂNG CAO (QUAN TRỌNG): Nếu người dùng yêu cầu 'Lấy toàn bộ thông tin chi tiết từng trường' từ 1 trang danh sách (List), bạn tiến hành: Chọn bộ lọc -> Danh sách hiện ra -> CLICK vào phần tử trường học đầu tiên -> Chờ trang con load -> EXTRACT -> Dùng lệnh GO_BACK để trở ra trang danh sách -> CLICK trường học tiếp theo... lặp lại liên tục cho đến hết màn hình.
 - Hãy dùng EXTRACT khi dữ liệu hiển thị trên màn hình hiện tại.
 - Sau khi EXTRACT xong toàn bộ 1 danh sách, hãy tìm nút "Trang sau/Next Page" và CLICK để sang trang mới.`
