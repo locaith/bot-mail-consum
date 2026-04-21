@@ -1238,7 +1238,7 @@ async function runTelegramMode() {
 async function runUniversalAgent(targetUrl, taskPrompt, colsInput) {
   let customColumns = [];
   if (colsInput.trim()) {
-    customColumns = colsInput.split(',').map(c => cleanText(c).replace(/[^a-zA-Z0-9_\u0080-\uFFFF]/g, '')).filter(Boolean);
+    customColumns = colsInput.split(',').map(c => cleanText(c).replace(/[^a-zA-Z0-9_\s\u0080-\uFFFF\/\-]/g, '').trim()).filter(Boolean);
   }
   if (customColumns.length === 0) {
     customColumns = ['data_1', 'data_2', 'data_3'];
@@ -1291,7 +1291,7 @@ Nhiệm vụ của bạn là suy nghĩ xem nên làm gì tiếp theo để đạ
 BẠN CHỈ ĐƯỢC PHÉP TRẢ VỀ ĐÚNG 1 STRING JSON HỢP LỆ (Không định dạng markdown xung quanh block), theo cấu trúc:
 {
   "thought": "Suy luận của bạn (Ví dụ: Trang web có bộ lọc Quốc gia, tôi nên hỏi người dùng muốn lấy quốc gia nào)",
-  "action": "ASK_USER" | "CLICK" | "TYPE" | "EXTRACT" | "WAIT" | "SCROLL_DOWN" | "SCROLL_UP",
+  "action": "ASK_USER" | "CLICK" | "TYPE" | "EXTRACT" | "WAIT" | "SCROLL_DOWN" | "SCROLL_UP" | "GO_BACK",
   "element_id": 123, 
   "value": "Nếu hành động là TYPE, điền chữ muốn gõ. Nếu hành động là ASK_USER, điền câu hỏi để hỏi người dùng",
   "extracted_data": [ ... mảng JSON các object theo đúng tên cột, nếu action là EXTRACT ]
@@ -1299,16 +1299,16 @@ BẠN CHỈ ĐƯỢC PHÉP TRẢ VỀ ĐÚNG 1 STRING JSON HỢP LỆ (Không đ
 Lưu ý "element_id" phải là một số nguyên (number), nếu không có thì để null.
 
 Nguyên tắc:
-- Hãy sử dụng ASK_USER nếu bạn không chắc chắn người dùng muốn lọc theo tiêu chí nào (Quốc gia, Ngành học...), hoặc nếu cần người dùng vượt captcha/đăng nhập.
-- BẠN CÓ "MẮT" LÀ ẢNH CHỤP MÀN HÌNH MÀ TÔI GỬI: Hãy quan sát ảnh để xem các Select box đã mở đúng chưa. Bạn là người điều khiển trang (dựa vào hình ảnh thực tế).
-- Nếu danh sách chưa kéo tới cuối mạng, hoặc không tìm thấy thẻ "Next Page", hãy dùng SCROLL_DOWN để cuộn qua.
-- Hãy dùng EXTRACT khi dữ liệu hiển thị tốt trên màn hình.
-- Sau khi EXTRACT xong 1 trang, nếu có nút "Trang sau/Next Page", hãy CLICK để sang trang mới.`
+- BẠN CÓ MẮT LÀ ẢNH CHỤP MÀN HÌNH: Hãy quan sát ảnh để xem các Select box đã mở chưa. Bạn là người điều khiển trang (dựa vào hình ảnh thực tế).
+- BẢN ĐỒ DOM: Các thẻ `A` đều có nội dung đường link (href), hãy ưu tiên các link vào trang web chính xác thay vì quảng cáo.
+- NÂNG CAO (QUAN TRỌNG): Nếu người dùng yêu cầu 'Lấy toàn bộ thông tin chi tiết từng trường' từ 1 trang danh sách (List), bạn tiến hành: Chọn bộ lọc -> Danh sách hiện ra -> CLICK vào phần tử trường học đầu tiên -> Chờ trang con load -> EXTRACT -> Dùng lệnh GO_BACK để trở ra trang danh sách -> CLICK trường học tiếp theo... lặp lại liên tục cho đến hết màn hình.
+- Hãy dùng EXTRACT khi dữ liệu hiển thị trên màn hình hiện tại.
+- Sau khi EXTRACT xong toàn bộ 1 danh sách, hãy tìm nút "Trang sau/Next Page" và CLICK để sang trang mới.`
         }]
       },
       {
         role: "model",
-        parts: [{ text: `{"thought": "Đã hiểu nhiệm vụ, tôi đã sẵn sàng. Hãy cung cấp ảnh màn hình.", "action": "WAIT"}` }]
+        parts: [{ text: `{"thought": "Đã hiểu nhiệm vụ, tôi đã sẵn sàng thu thập dữ liệu sâu. Hãy cung cấp ảnh màn hình.", "action": "WAIT"}` }]
       }
     ]
   };
@@ -1325,9 +1325,10 @@ Nguyên tắc:
             // Lọc ra các phần tử thực sự hiển thị trên màn hình hiện tại
             if (rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.top <= window.innerHeight + 500) {
                 const text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+                const href = el.getAttribute('href') ? `(href: ${el.getAttribute('href')}) ` : '';
                 if (text || el.tagName.toLowerCase() === 'input') {
                     el.setAttribute('data-ai-id', counter);
-                    interactables.push(`[${counter}] ${el.tagName}: ${text.substring(0, 40)}`);
+                    interactables.push(`[${counter}] ${el.tagName} ${href}: ${text.substring(0, 40)}`);
                     counter++;
                 }
             }
@@ -1367,7 +1368,7 @@ Hãy phản hồi bằng đúng 1 object JSON chứa quyết định hành độ
     chatHistory.contents.push({ role: "user", parts: partsArray });
 
     // Giữ cho context window không quá dài để tránh lỗi Gemini Payload Too Large
-    if (chatHistory.contents.length > 20) {
+    if (chatHistory.contents.length > 50) {
        chatHistory.contents.splice(2, 2); // Cắt bớt lịch sử giữa chừng, giữ lại prompt gốc
     }
 
@@ -1463,6 +1464,11 @@ Hãy phản hồi bằng đúng 1 object JSON chứa quyết định hành độ
       }
       else if (aiAction.action === 'WAIT') {
          console.log(chalk.gray(`[⏳ Agent Chờ]: Đang đợi trang web load/phản hồi...`));
+         await sleep(3000);
+      }
+      else if (aiAction.action === 'GO_BACK') {
+         console.log(chalk.magenta(`[🔙 Agent Trở Về]: Đang quay ngược lại trang trước đó...`));
+         await page.goBack({ waitUntil: 'domcontentloaded' }).catch(()=>{});
          await sleep(3000);
       }
       else {
