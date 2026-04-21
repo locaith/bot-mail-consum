@@ -22,6 +22,14 @@ const TIMEZONE = process.env.TIMEZONE || 'Asia/Ho_Chi_Minh';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
 const INTRO_NAME = process.env.INTRO_NAME || 'dev Ha';
+const TELEGRAM_MODE = String(process.env.TELEGRAM_MODE || 'false').toLowerCase() === 'true';
+const TELEGRAM_SELECTED_EMAIL = cleanText(process.env.TELEGRAM_SELECTED_EMAIL || '').toLowerCase();
+const TELEGRAM_TARGET_COUNT = cleanText(process.env.TELEGRAM_TARGET_COUNT || 'all');
+const TELEGRAM_FORCE_REPROCESS = String(process.env.TELEGRAM_FORCE_REPROCESS || 'false').toLowerCase() === 'true';
+const TELEGRAM_CUSTOM_PROMPT = cleanText(process.env.TELEGRAM_CUSTOM_PROMPT || '');
+const TELEGRAM_LOGIN_PASSWORD = process.env.TELEGRAM_LOGIN_PASSWORD || '';
+const TELEGRAM_WAIT_APPROVAL_SECONDS = parseInt(process.env.TELEGRAM_WAIT_APPROVAL_SECONDS || '240', 10);
+const TELEGRAM_JSON_PREFIX = '__TELEGRAM_JSON__';
 
 let EXCEL_HEADERS = [
   'account_id', 'email', 'sender_email', 'subject',
@@ -63,6 +71,16 @@ function cleanText(value) {
     .replace(/\u200b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function emitTelegramEvent(event, message, extra = {}) {
+  if (!TELEGRAM_MODE) return;
+  const payload = {
+    event: cleanText(event),
+    message: cleanText(message),
+    ...extra
+  };
+  console.log(`${TELEGRAM_JSON_PREFIX}${JSON.stringify(payload)}`);
 }
 
 function escapeFormula(value) {
@@ -361,6 +379,85 @@ class GmailWebBot {
 
     await this.log('Đăng nhập Gmail thành công, session đã được lưu vào profile.', 'success');
     await this.closeContext();
+  }
+
+  async setupLoginAutomated(password, waitSeconds = 240) {
+    if (!password) {
+      throw new Error('Thiếu mật khẩu Gmail cho chế độ tự động.');
+    }
+    await this.launchContext();
+    await this.page.goto(this.account.gmailUrl, { waitUntil: 'domcontentloaded' });
+    emitTelegramEvent('login_started', `Tôi đã mở phiên đăng nhập cho ${this.account.email}.`);
+    await this.randomDelay(800, 1600);
+
+    if (await this.isLoggedIn()) {
+      emitTelegramEvent(
+        'login_ready',
+        `Phiên Gmail của ${this.account.email} đã đăng nhập sẵn, tôi chuyển sang lấy mail.`,
+        { email: this.account.email, profile_dir: this.profileDir }
+      );
+      await this.closeContext();
+      return;
+    }
+
+    const emailInput = this.page.locator('input[type="email"]').first();
+    if (await emailInput.count() > 0) {
+      await emailInput.fill(this.account.email, { timeout: 15000 });
+      const nextButton = this.page.locator('#identifierNext button, #identifierNext').first();
+      if (await nextButton.count() > 0) {
+        await nextButton.click({ timeout: 15000 });
+      } else {
+        await this.page.keyboard.press('Enter');
+      }
+      await this.randomDelay(1200, 2200);
+      emitTelegramEvent('login_email_filled', `Tôi đã điền địa chỉ ${this.account.email}.`);
+    }
+
+    const passwordInput = this.page.locator('input[type="password"]').first();
+    await passwordInput.waitFor({ timeout: 30000 });
+    await passwordInput.fill(password, { timeout: 15000 });
+    const passwordNext = this.page.locator('#passwordNext button, #passwordNext').first();
+    if (await passwordNext.count() > 0) {
+      await passwordNext.click({ timeout: 15000 });
+    } else {
+      await this.page.keyboard.press('Enter');
+    }
+    emitTelegramEvent(
+      'approval_requested',
+      'Tôi đã nhập mật khẩu. Nếu điện thoại hiện xác thực, hãy chấp thuận để tôi tiếp tục.',
+      { email: this.account.email }
+    );
+
+    const deadline = Date.now() + Math.max(60, waitSeconds) * 1000;
+    let lastHeartbeat = 0;
+    while (Date.now() < deadline) {
+      await this.randomDelay(3000, 5000);
+      if (await this.isLoggedIn()) {
+        emitTelegramEvent(
+          'login_ready',
+          `Đăng nhập Gmail cho ${this.account.email} đã thành công và session đã được lưu.`,
+          { email: this.account.email, profile_dir: this.profileDir }
+        );
+        await this.closeContext();
+        return;
+      }
+      if (Date.now() - lastHeartbeat >= 15000) {
+        emitTelegramEvent(
+          'approval_waiting',
+          `Tôi vẫn đang chờ xác thực trên điện thoại cho ${this.account.email}.`,
+          { email: this.account.email }
+        );
+        lastHeartbeat = Date.now();
+      }
+    }
+
+    emitTelegramEvent(
+      'password_required',
+      `Tôi vẫn chưa vào được hộp thư ${this.account.email}. Hãy kiểm tra lại xác thực trên điện thoại hoặc gửi lại mật khẩu nếu cần.`,
+      { email: this.account.email, profile_dir: this.profileDir }
+    );
+    await this.closeContext();
+    throw new Error('awaiting_phone_approval_or_login_timeout');
   }
 
   async gotoInbox() {
@@ -1008,10 +1105,267 @@ async function handleAddAccountFlow(existingAccounts) {
   return loadAccounts();
 }
 
+function ensureTelegramAccount(existingAccounts, email) {
+  const normalizedEmail = cleanText(email).toLowerCase();
+  let account = existingAccounts.find(acc => cleanText(acc.email).toLowerCase() === normalizedEmail);
+  if (account) return { accounts: existingAccounts, account };
+
+  const id = normalizedEmail.split('@')[0].replace(/[^a-zA-Z0-9]/g, '_') || 'gmail_account';
+  account = {
+    id,
+    email: normalizedEmail,
+    maxEmails: 9999,
+    mailConcurrency: DEFAULT_MAIL_CONCURRENCY,
+    profileDir: `./profiles/${id}`,
+    gmailUrl: 'https://mail.google.com/mail/u/0/#inbox',
+    enabled: true,
+    onlyUnread: false,
+    query: '',
+    proxy: ''
+  };
+  existingAccounts.push(account);
+  safeJsonWrite(ACCOUNTS_FILE, existingAccounts);
+  return { accounts: existingAccounts, account };
+}
+
+async function runTelegramAccount(account, outputFile, targetCount, forceProcess, customPrompt) {
+  const excelWriter = new ExcelWriter(outputFile);
+  const rows = await new Promise((resolve, reject) => {
+    const worker = new Worker(__filename, {
+      workerData: {
+        account: { ...account, maxEmails: targetCount },
+        accountIndex: 0,
+        forceProcess,
+        customPrompt,
+        customColumns: []
+      }
+    });
+
+    worker.on('message', async message => {
+      try {
+        if (message.error) {
+          reject(new Error(message.error));
+          return;
+        }
+        const emittedRows = Array.isArray(message.rows) ? message.rows : [];
+        if (emittedRows.length) {
+          await excelWriter.appendRows(emittedRows);
+        }
+        emitTelegramEvent(
+          'fetch_completed',
+          `Tôi đã xử lý xong ${emittedRows.length} mail mới từ ${account.email}.`,
+          { email: account.email, row_count: emittedRows.length, output_excel: outputFile }
+        );
+        resolve(emittedRows);
+      } catch (error) {
+        reject(error);
+      }
+    });
+
+    worker.on('error', error => reject(error));
+    worker.on('exit', code => {
+      if (code !== 0) {
+        reject(new Error(`Worker Gmail thoát với mã ${code}`));
+      }
+    });
+  });
+  await excelWriter.queue;
+  return rows;
+}
+
+async function runTelegramMode() {
+  banner();
+  ensureDir(path.join(ROOT_DIR, 'state'));
+  ensureDir(path.dirname(OUTPUT_EXCEL));
+
+  if (!TELEGRAM_SELECTED_EMAIL) {
+    emitTelegramEvent('error', 'Thiếu địa chỉ Gmail đích cho chế độ Telegram.');
+    process.exit(2);
+  }
+
+  let accounts = loadAccounts();
+  const ensured = ensureTelegramAccount(accounts, TELEGRAM_SELECTED_EMAIL);
+  accounts = ensured.accounts;
+  const account = ensured.account;
+  emitTelegramEvent('start', `Tôi bắt đầu chuẩn bị kéo mail cho ${account.email}.`, {
+    email: account.email,
+    output_excel: OUTPUT_EXCEL,
+  });
+
+  const bot = new GmailWebBot(account, 0);
+  let loggedIn = false;
+  try {
+    await bot.launchContext();
+    loggedIn = await bot.isLoggedIn();
+  } finally {
+    await bot.closeContext();
+  }
+
+  if (!loggedIn) {
+    if (!TELEGRAM_LOGIN_PASSWORD) {
+      emitTelegramEvent(
+        'password_required',
+        `Tôi cần mật khẩu để đăng nhập Gmail cho ${account.email}. Sau đó tôi sẽ tự điền vào Chrome và chờ bạn xác thực trên điện thoại.`,
+        { email: account.email, profile_dir: path.resolve(ROOT_DIR, account.profileDir) }
+      );
+      process.exit(12);
+    }
+    await bot.setupLoginAutomated(TELEGRAM_LOGIN_PASSWORD, TELEGRAM_WAIT_APPROVAL_SECONDS);
+  } else {
+    emitTelegramEvent(
+      'login_ready',
+      `Phiên Gmail của ${account.email} đã có sẵn. Tôi chuyển sang lấy mail ngay bây giờ.`,
+      { email: account.email, profile_dir: path.resolve(ROOT_DIR, account.profileDir) }
+    );
+  }
+
+  const targetCount = TELEGRAM_TARGET_COUNT.toLowerCase() === 'all'
+    ? 9999
+    : (parseInt(TELEGRAM_TARGET_COUNT || '0', 10) || 50);
+  emitTelegramEvent(
+    'fetch_started',
+    `Tôi bắt đầu kéo mail từ ${account.email} và sẽ xuất toàn bộ ra file Excel khi xong.`,
+    { email: account.email, target_count: targetCount, output_excel: OUTPUT_EXCEL }
+  );
+  await runTelegramAccount(account, OUTPUT_EXCEL, targetCount, TELEGRAM_FORCE_REPROCESS, TELEGRAM_CUSTOM_PROMPT);
+  emitTelegramEvent(
+    'completed',
+    `Tôi đã hoàn tất việc kéo mail từ ${account.email} và lưu file Excel xong.`,
+    { email: account.email, output_excel: OUTPUT_EXCEL, profile_dir: path.resolve(ROOT_DIR, account.profileDir) }
+  );
+}
+
+async function runUniversalAgent(targetUrl, taskPrompt, colsInput) {
+  let customColumns = [];
+  if (colsInput.trim()) {
+    customColumns = colsInput.split(',').map(c => cleanText(c).replace(/[^a-zA-Z0-9_\u0080-\uFFFF]/g, '')).filter(Boolean);
+  }
+  if (customColumns.length === 0) {
+    customColumns = ['data_1', 'data_2', 'data_3'];
+  }
+
+  const outFile = path.join(ROOT_DIR, 'output', 'website_data.xlsx');
+  const workbook = new ExcelJS.Workbook();
+  let sheet;
+  if (fileExists(outFile)) {
+    await workbook.xlsx.readFile(outFile);
+    sheet = workbook.getWorksheet('Data') || workbook.addWorksheet('Data');
+  } else {
+    sheet = workbook.addWorksheet('Data');
+    sheet.addRow([...customColumns, 'url', 'created_at']);
+    sheet.getRow(1).font = { bold: true };
+  }
+
+  const profileDir = path.join(ROOT_DIR, 'profiles', 'universal_agent');
+  ensureDir(profileDir);
+  const context = await chromium.launchPersistentContext(profileDir, {
+    headless: false,
+    viewport: null
+  });
+  const page = context.pages()[0] || await context.newPage();
+  
+  if (targetUrl.trim()) {
+      try {
+          await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      } catch (e) {
+          console.log(chalk.red(`Không thể load URL: ${e.message}`));
+      }
+  }
+
+  console.log(chalk.magenta('\n======================================================'));
+  console.log(chalk.green('🌐 TRÌNH DUYỆT AGENT ĐÃ MỞ!'));
+  console.log(chalk.white('1. Quý khách vui lòng tương tác trên trình duyệt (Đăng nhập, tìm kiếm...).'));
+  console.log(chalk.white('2. Load trang có chứa dữ liệu cần lấy.'));
+  console.log(chalk.magenta('======================================================\n'));
+
+  while (true) {
+    const action = await ask(chalk.yellow(`Nhấn ENTER để cào dữ liệu trên trang hiện tại (hoặc gõ 'exit' để thoát): `));
+    if (action.toLowerCase() === 'exit') break;
+
+    console.log(chalk.cyan('\n[*] Đang đọc nội dung trang web...'));
+    const pageText = await page.evaluate(() => document.body.innerText);
+    const currentUrl = page.url();
+
+    console.log(chalk.cyan(`[*] Khối lượng dữ liệu: ${pageText.length} ký tự. Đang gửi cho AI phân tích...`));
+    
+    let dynamicSchemaObj = {};
+    customColumns.forEach(c => dynamicSchemaObj[c] = typeof c === 'string' ? '' : '');
+    const schemaStr = JSON.stringify([dynamicSchemaObj], null, 2);
+
+    const prompt = [
+      `Bạn là một Data Engineer cào dữ liệu website. Người dùng yêu cầu: ${taskPrompt}`,
+      'Trích xuất tất cả các thông tin khớp với yêu cầu từ văn bản dưới đây và trả về DƯỚI DẠNG DANH SÁCH JSON (Array of Objects).',
+      'CHỈ trả về mảng JSON hợp lệ, bắt buộc dùng schema dưới đây, không markdown, không giải thích.',
+      schemaStr,
+      `Nội dung web:`,
+      pageText.substring(0, 150000)
+    ].join('\n');
+
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+      const response = await axios.post(url, {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+      }, { timeout: 120000, headers: { 'Content-Type': 'application/json' } });
+
+      const text = response?.data?.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('') || '[]';
+      let parsed = [];
+      try {
+        const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
+        if (jsonMatch) parsed = JSON.parse(jsonMatch[1]);
+        else parsed = JSON.parse(text);
+      } catch (e) {
+        parsed = [];
+      }
+
+      if (!Array.isArray(parsed)) {
+        if (typeof parsed === 'object') parsed = [parsed];
+        else parsed = [];
+      }
+
+      console.log(chalk.green(`[+] AI đã tìm thấy ${parsed.length} dòng dữ liệu.`));
+      
+      const now = DateTime.now().setZone(TIMEZONE).toISO();
+      parsed.forEach(item => {
+        const rowData = customColumns.map(c => escapeFormula(item[c] ?? ''));
+        rowData.push(currentUrl, now);
+        sheet.addRow(rowData);
+      });
+
+      await workbook.xlsx.writeFile(outFile);
+      console.log(chalk.green(`[+] Đã lưu vào ${outFile}`));
+
+    } catch (error) {
+      console.log(chalk.red(`[-] Gặp lỗi khi gọi AI: ${error.message}`));
+    }
+  }
+
+  await context.close();
+  console.log(chalk.green('Đã đóng Agent Crawler.'));
+}
+
 async function main() {
   banner();
   ensureDir(path.join(ROOT_DIR, 'state'));
   ensureDir(path.dirname(OUTPUT_EXCEL));
+
+  console.log(chalk.magenta('\n================ CHỌN MODULE HOẠT ĐỘNG ================'));
+  console.log(chalk.cyan('  1. AI Web Agent: Cào dữ liệu từ trang web bất kỳ (MỚI)'));
+  console.log(chalk.cyan('  2. Gmail AI Bot: Đồng bộ & xử lý hộp thư Gmail (Mặc định)'));
+  console.log(chalk.magenta('======================================================='));
+  const modeInput = await ask('\nNhập lựa chọn của bạn (1 hoặc 2. Nhấn Enter để chọn 2): ');
+
+  if (modeInput.trim() === '1') {
+    console.log(chalk.yellow('\n--- THIẾT LẬP AI WEB AGENT ---'));
+    let url = await ask('1. Nhập URL trang web muốn cào (Ví dụ: https://unisetu.com): ');
+    let task = await ask('2. Bạn muốn AI trích xuất gì? (Ví dụ: Lọc tên khóa học, học phí...): ');
+    let cols = await ask('3. Tên cột xuất Excel (Ví dụ: TenKhoaHoc, HocPhi, ThoiGian): ');
+    
+    if (url && !url.startsWith('http')) url = 'https://' + url;
+
+    await runUniversalAgent(url, task, cols);
+    return;
+  }
 
   let accounts = loadAccounts();
 
@@ -1180,7 +1534,13 @@ async function main() {
 }
 
 if (isMainThread) {
-  main().catch(error => {
+  const runner = process.argv.includes('--telegram-run') ? runTelegramMode : main;
+  runner().catch(error => {
+    if (TELEGRAM_MODE) {
+      emitTelegramEvent('error', cleanText(error.message || String(error)));
+      process.exit(1);
+      return;
+    }
     console.error(chalk.red(`Lỗi rồi: ${error.message}`));
     process.exit(1);
   });

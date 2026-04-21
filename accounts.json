@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "id": "abc",
+    "email": "abc@gmail.com",
+    "maxEmails": 9999,
+    "mailConcurrency": 10,
+    "profileDir": "./profiles/abc",
+    "gmailUrl": "https://mail.google.com/mail/u/0/#inbox",
+    "enabled": true,
+    "onlyUnread": false,
+    "query": "",
+    "proxy": ""
+  }
+]
