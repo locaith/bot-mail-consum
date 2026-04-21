@@ -1291,7 +1291,7 @@ Nhiệm vụ của bạn là suy nghĩ xem nên làm gì tiếp theo để đạ
 BẠN CHỈ ĐƯỢC PHÉP TRẢ VỀ ĐÚNG 1 STRING JSON HỢP LỆ (Không định dạng markdown xung quanh block), theo cấu trúc:
 {
   "thought": "Suy luận của bạn (Ví dụ: Trang web có bộ lọc Quốc gia, tôi nên hỏi người dùng muốn lấy quốc gia nào)",
-  "action": "ASK_USER" | "CLICK" | "TYPE" | "EXTRACT" | "WAIT",
+  "action": "ASK_USER" | "CLICK" | "TYPE" | "EXTRACT" | "WAIT" | "SCROLL_DOWN" | "SCROLL_UP",
   "element_id": 123, 
   "value": "Nếu hành động là TYPE, điền chữ muốn gõ. Nếu hành động là ASK_USER, điền câu hỏi để hỏi người dùng",
   "extracted_data": [ ... mảng JSON các object theo đúng tên cột, nếu action là EXTRACT ]
@@ -1300,13 +1300,15 @@ Lưu ý "element_id" phải là một số nguyên (number), nếu không có th
 
 Nguyên tắc:
 - Hãy sử dụng ASK_USER nếu bạn không chắc chắn người dùng muốn lọc theo tiêu chí nào (Quốc gia, Ngành học...), hoặc nếu cần người dùng vượt captcha/đăng nhập.
-- Hãy dùng EXTRACT khi bảng dữ liệu đã hiển thị đầy đủ trên màn hình.
+- BẠN CÓ "MẮT" LÀ ẢNH CHỤP MÀN HÌNH MÀ TÔI GỬI: Hãy quan sát ảnh để xem các Select box đã mở đúng chưa. Bạn là người điều khiển trang (dựa vào hình ảnh thực tế).
+- Nếu danh sách chưa kéo tới cuối mạng, hoặc không tìm thấy thẻ "Next Page", hãy dùng SCROLL_DOWN để cuộn qua.
+- Hãy dùng EXTRACT khi dữ liệu hiển thị tốt trên màn hình.
 - Sau khi EXTRACT xong 1 trang, nếu có nút "Trang sau/Next Page", hãy CLICK để sang trang mới.`
         }]
       },
       {
         role: "model",
-        parts: [{ text: `{"thought": "Đã hiểu nhiệm vụ, tôi đã sẵn sàng.", "action": "WAIT"}` }]
+        parts: [{ text: `{"thought": "Đã hiểu nhiệm vụ, tôi đã sẵn sàng. Hãy cung cấp ảnh màn hình.", "action": "WAIT"}` }]
       }
     ]
   };
@@ -1347,9 +1349,22 @@ ${domSnapshot.interactables || '(Không có)'}
 VĂN BẢN TRÊN TRANG (Trích xuất để lấy dữ liệu):
 ${domSnapshot.text}
 
-Hãy phản hồi bằng đúng 1 object JSON chứa quyết định hành động tiếp theo của bạn.`;
+Hãy phản hồi bằng đúng 1 object JSON chứa quyết định hành động tiếp theo của bạn.
+(Gợi ý: Tôi có GỬI KÈM ẢNH CHỤP MÀN HÌNH (Screenshot) ở ngay dưới. Bạn có mắt, hãy nhìn ảnh để quyết định nhé!)`;
 
-    chatHistory.contents.push({ role: "user", parts: [{ text: userPrompt }] });
+    const screenshotBuffer = await page.screenshot({ type: 'jpeg', quality: 30 }).catch(() => null);
+    
+    let partsArray = [{ text: userPrompt }];
+    if (screenshotBuffer) {
+        partsArray.push({
+            inlineData: {
+                mimeType: "image/jpeg",
+                data: screenshotBuffer.toString('base64')
+            }
+        });
+    }
+
+    chatHistory.contents.push({ role: "user", parts: partsArray });
 
     // Giữ cho context window không quá dài để tránh lỗi Gemini Payload Too Large
     if (chatHistory.contents.length > 20) {
@@ -1422,8 +1437,12 @@ Hãy phản hồi bằng đúng 1 object JSON chứa quyết định hành độ
                rowData.push(page.url(), now);
                sheet.addRow(rowData);
             });
-            await workbook.xlsx.writeFile(outFile);
-            console.log(chalk.green(`[+] Đã lưu vào ${outFile}`));
+            try {
+               await workbook.xlsx.writeFile(outFile);
+               console.log(chalk.green(`[+] Đã lưu vào ${outFile}`));
+            } catch (err) {
+               console.log(chalk.red(`[!] BẠN ĐANG MỞ FILE EXCEL NÊN KHÔNG THỂ LƯU! Hãy đóng file excel ngay. (${err.message})`));
+            }
          } else {
             console.log(chalk.yellow(`[-] Lệnh EXTRACT nhưng mảng dữ liệu trả về rỗng.`));
          }
@@ -1431,6 +1450,16 @@ Hãy phản hồi bằng đúng 1 object JSON chứa quyết định hành độ
          const isContinue = await ask(chalk.green(`\nAgent vừa EXTRACT xong. Nhấn Enter để Agent TỰ ĐỘNG làm tiếp (Tìm nút Next Page), hoặc gõ 'exit' để dừng: `));
          if (isContinue.toLowerCase() === 'exit') break;
          chatHistory.contents.push({ role: "user", parts: [{ text: "Đã trích xuất và lưu xong. Hãy click sang tiếp trang sau hoặc thực hiện hành động tiếp theo." }] });
+      }
+      else if (aiAction.action === 'SCROLL_DOWN') {
+         console.log(chalk.gray(`[⏬ Agent Cuộn]: Đang cuộn trang xuống...`));
+         await page.mouse.wheel(0, 800).catch(()=>{});
+         await sleep(2000);
+      }
+      else if (aiAction.action === 'SCROLL_UP') {
+         console.log(chalk.gray(`[⏫ Agent Cuộn]: Đang cuộn trang lên...`));
+         await page.mouse.wheel(0, -800).catch(()=>{});
+         await sleep(2000);
       }
       else if (aiAction.action === 'WAIT') {
          console.log(chalk.gray(`[⏳ Agent Chờ]: Đang đợi trang web load/phản hồi...`));
