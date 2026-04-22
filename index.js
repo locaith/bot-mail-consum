@@ -181,8 +181,7 @@ class ExcelWriter {
     if (!sheet) {
       sheet = workbook.addWorksheet('emails');
       sheet.addRow(EXCEL_HEADERS);
-      sheet.getRow(1).font = { bold: true };
-      sheet.columns = EXCEL_HEADERS.map(header => ({ header, key: header, width: 24 }));
+      applyPremiumStyling(sheet, EXCEL_HEADERS);
     }
 
     return { workbook, sheet };
@@ -205,6 +204,49 @@ class ExcelWriter {
 
     return this.queue;
   }
+}
+
+/**
+ * Hàm làm đẹp Excel theo phong cách chuyên nghiệp
+ */
+function applyPremiumStyling(sheet, headers) {
+  // 1. Định dạng chiều rộng cột mặc định
+  sheet.columns = headers.map(h => ({ header: h, key: h, width: 20 }));
+
+  // 2. Cố định dòng tiêu đề
+  sheet.views = [{ state: 'frozen', xSplit: 0, ySplit: 1, topLeftCell: 'A2', activeSelection: 'A2' }];
+
+  const headerRow = sheet.getRow(1);
+  headerRow.height = 30;
+  headerRow.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+
+  // 3. Đổ màu Header theo phân vùng (Dựa trên tên cột)
+  headers.forEach((h, i) => {
+    const cell = headerRow.getCell(i + 1);
+    let color = 'FF4472C4'; // Mặc định là Xanh dương đậm
+
+    const head = String(h).toLowerCase();
+    if (head.includes('trường') || head.includes('school') || head.includes('rank') || head.includes('quốc gia') || head.includes('stt') || head.includes('phân loại')) {
+      color = 'FFE26B8D'; // Màu Hồng (như mẫu: Thông tin trường)
+    } else if (head.includes('học phí') || head.includes('học bổng') || head.includes('balance') || head.includes('amount') || head.includes('currency')) {
+      color = 'FFC00000'; // Màu Đỏ/Cam đậm (Học phí)
+    } else if (head.includes('hệ') || head.includes('ngành') || head.includes('điều kiện') || head.includes('gpa') || head.includes('ielts')) {
+      color = 'FF5B9BD5'; // Màu Xanh nhạt (Chương trình & Điều kiện)
+    } else if (head.includes('sinh hoạt') || head.includes('note') || head.includes('ghi chú')) {
+      color = 'FFBF8F00'; // Màu Vàng đất (Phí sinh hoạt)
+    } else if (head.includes('website') || head.includes('url')) {
+      color = 'FF7030A0'; // Màu Tím (Link liên kết)
+    }
+
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color } };
+    cell.border = {
+      top: { style: 'thin' },
+      left: { style: 'thin' },
+      bottom: { style: 'thin' },
+      right: { style: 'thin' }
+    };
+  });
 }
 
 class GmailWebBot {
@@ -1245,15 +1287,23 @@ async function runUniversalAgent(targetUrl, taskPrompt, colsInput) {
   }
 
   const outFile = path.join(ROOT_DIR, 'output', 'website_data.xlsx');
+  const stateFile = path.join(ROOT_DIR, 'state', 'web_agent_state.json');
+  
+  // Load trí nhớ (checkpoint)
+  let agentState = safeJsonRead(stateFile, { processedUrls: [], lastUrl: '', statistics: { totalExtracted: 0 } });
+  const processedUrlsSet = new Set(agentState.processedUrls);
+
   const workbook = new ExcelJS.Workbook();
   let sheet;
+  const fullHeaders = [...customColumns, 'url', 'created_at'];
+
   if (fileExists(outFile)) {
     await workbook.xlsx.readFile(outFile);
     sheet = workbook.getWorksheet('Data') || workbook.addWorksheet('Data');
   } else {
     sheet = workbook.addWorksheet('Data');
-    sheet.addRow([...customColumns, 'url', 'created_at']);
-    sheet.getRow(1).font = { bold: true };
+    sheet.addRow(fullHeaders);
+    applyPremiumStyling(sheet, fullHeaders);
   }
 
   const profileDir = path.join(ROOT_DIR, 'profiles', 'universal_agent');
@@ -1262,7 +1312,7 @@ async function runUniversalAgent(targetUrl, taskPrompt, colsInput) {
     headless: false,
     viewport: null
   });
-  const page = context.pages()[0] || await context.newPage();
+  let page = context.pages()[0] || await context.newPage();
   
   if (targetUrl.trim()) {
       try {
@@ -1301,9 +1351,11 @@ Lưu ý "element_id" phải là một số nguyên (number), nếu không có th
 Nguyên tắc:
 - BẠN CÓ MẮT LÀ ẢNH CHỤP MÀN HÌNH: Hãy quan sát ảnh để xem các Select box đã mở chưa. Bạn là người điều khiển trang (dựa vào hình ảnh thực tế).
 - BẢN ĐỒ DOM: Các thẻ 'A' (Link) đều có nội dung đường link (href), hãy ưu tiên các link vào trang web chính xác thay vì quảng cáo.
-- NÂNG CAO (QUAN TRỌNG): Nếu người dùng yêu cầu 'Lấy toàn bộ thông tin chi tiết từng trường' từ 1 trang danh sách (List), bạn tiến hành: Chọn bộ lọc -> Danh sách hiện ra -> CLICK vào phần tử trường học đầu tiên -> Chờ trang con load -> EXTRACT -> Dùng lệnh GO_BACK để trở ra trang danh sách -> CLICK trường học tiếp theo... lặp lại liên tục cho đến hết màn hình.
+- TRÍ NHỚ (QUAN TRỌNG): Bạn sẽ được cung cấp danh sách URL đã xử lý. TUYỆT ĐỐI KHÔNG CLICK vào các link này nữa.
+- CHỐNG VÒNG LẶP: TUYỆT ĐỐI KHÔNG CLICK vào cùng một phần tử (ID) quá 2 lần liên tiếp. Nếu click không có tác dụng, bạn phải tìm phần tử khác, cuộn trang (SCROLL_DOWN), hoặc dùng lệnh GO_BACK.
+- NÂNG CAO (QUAN TRỌNG): Nếu người dùng yêu cầu 'Lấy toàn bộ thông tin chi tiết từng trường' từ 1 trang danh sách (List), bạn tiến hành: Chọn bộ lọc -> Danh sách hiện ra -> Tìm trường học CHƯA CÓ TRONG TRÍ NHỚ -> CLICK vào đó -> Chờ trang con load -> EXTRACT -> Dùng lệnh GO_BACK để trở ra trang danh sách -> Tìm trường tiếp theo chưa lấy.
 - Hãy dùng EXTRACT khi dữ liệu hiển thị trên màn hình hiện tại.
-- Sau khi EXTRACT xong toàn bộ 1 danh sách, hãy tìm nút "Trang sau/Next Page" và CLICK để sang trang mới.`
+- Sau khi EXTRACT xong, hệ thống sẽ TỰ ĐỘNG yêu cầu bạn làm bước tiếp theo. Hãy tìm nút "Trang sau/Next Page" và CLICK nếu đã hết danh sách ở trang hiện tại.`
         }]
       },
       {
@@ -1314,8 +1366,17 @@ Nguyên tắc:
   };
 
   while (true) {
+    const pages = context.pages();
+    page = pages[pages.length - 1]; // Luôn lấy tab mới nhất
+    await page.bringToFront();
+
     console.log(chalk.cyan(`\n[*] Agent đang phân tích trang web (${page.url()})...`));
     
+    // Xóa target="_blank" để ngăn web tự bật tab mới gây loạn
+    await page.evaluate(() => {
+        document.querySelectorAll('a[target="_blank"]').forEach(a => a.removeAttribute('target'));
+    }).catch(()=>{});
+
     const domSnapshot = await page.evaluate(() => {
         let counter = 1;
         let interactables = [];
@@ -1350,8 +1411,13 @@ ${domSnapshot.interactables || '(Không có)'}
 VĂN BẢN TRÊN TRANG (Trích xuất để lấy dữ liệu):
 ${domSnapshot.text}
 
+TRÍ NHỚ (Các URL đã lấy dữ liệu - Hãy bỏ qua):
+${agentState.processedUrls.slice(-20).join('\n') || '(Chưa có)'}
+${agentState.processedUrls.length > 20 ? `... và ${agentState.processedUrls.length - 20} trường khác đã lấy.` : ''}
+
 Hãy phản hồi bằng đúng 1 object JSON chứa quyết định hành động tiếp theo của bạn.
-(Gợi ý: Tôi có GỬI KÈM ẢNH CHỤP MÀN HÌNH (Screenshot) ở ngay dưới. Bạn có mắt, hãy nhìn ảnh để quyết định nhé!)`;
+(Gợi ý: Tôi có GỬI KÈM ẢNH CHỤN MÀN HÌNH (Screenshot) ở ngay dưới. Bạn có mắt, hãy nhìn ảnh để quyết định nhé!)
+TỰ ĐỘNG HÓA: Sau khi EXTRACT, bạn hãy chủ động tìm cách quay lại danh sách hoặc sang trang tiếp theo mà không cần hỏi lại.`;
 
     const screenshotBuffer = await page.screenshot({ type: 'jpeg', quality: 30 }).catch(() => null);
     
@@ -1433,14 +1499,26 @@ Hãy phản hồi bằng đúng 1 object JSON chứa quyết định hành độ
          if (data.length > 0) {
             console.log(chalk.green(`[+] AI đã trích xuất thành công ${data.length} dòng dữ liệu!`));
             const now = DateTime.now().setZone(TIMEZONE).toISO();
+            const currentUrl = page.url();
+            
             data.forEach(item => {
                const rowData = customColumns.map(c => escapeFormula(item[c] ?? ''));
-               rowData.push(page.url(), now);
+               rowData.push(currentUrl, now);
                sheet.addRow(rowData);
             });
+
+            // Cập nhật trí nhớ (Checkpoint)
+            if (!processedUrlsSet.has(currentUrl)) {
+                processedUrlsSet.add(currentUrl);
+                agentState.processedUrls.push(currentUrl);
+                agentState.statistics.totalExtracted++;
+                agentState.lastUrl = currentUrl;
+                safeJsonWrite(stateFile, agentState);
+            }
+
             try {
                await workbook.xlsx.writeFile(outFile);
-               console.log(chalk.green(`[+] Đã lưu vào ${outFile}`));
+               console.log(chalk.green(`[+] Đã lưu vào ${outFile} và cập nhật checkpoint.`));
             } catch (err) {
                console.log(chalk.red(`[!] BẠN ĐANG MỞ FILE EXCEL NÊN KHÔNG THỂ LƯU! Hãy đóng file excel ngay. (${err.message})`));
             }
@@ -1448,9 +1526,9 @@ Hãy phản hồi bằng đúng 1 object JSON chứa quyết định hành độ
             console.log(chalk.yellow(`[-] Lệnh EXTRACT nhưng mảng dữ liệu trả về rỗng.`));
          }
 
-         const isContinue = await ask(chalk.green(`\nAgent vừa EXTRACT xong. Nhấn Enter để Agent TỰ ĐỘNG làm tiếp (Tìm nút Next Page), hoặc gõ 'exit' để dừng: `));
-         if (isContinue.toLowerCase() === 'exit') break;
-         chatHistory.contents.push({ role: "user", parts: [{ text: "Đã trích xuất và lưu xong. Hãy click sang tiếp trang sau hoặc thực hiện hành động tiếp theo." }] });
+         console.log(chalk.cyan(`[*] TỰ ĐỘNG HÓA: Đang yêu cầu Agent tiếp tục hành động tiếp theo...`));
+         chatHistory.contents.push({ role: "user", parts: [{ text: "Đã trích xuất và lưu xong. Tuyệt vời! Bây giờ hãy TRỞ VỀ danh sách (GO_BACK) hoặc tìm trường tiếp theo chưa lấy để tiếp tục nhiệm vụ cho đến khi hoàn tất." }] });
+         await sleep(1000);
       }
       else if (aiAction.action === 'SCROLL_DOWN') {
          console.log(chalk.gray(`[⏬ Agent Cuộn]: Đang cuộn trang xuống...`));
@@ -1467,9 +1545,15 @@ Hãy phản hồi bằng đúng 1 object JSON chứa quyết định hành độ
          await sleep(3000);
       }
       else if (aiAction.action === 'GO_BACK') {
-         console.log(chalk.magenta(`[🔙 Agent Trở Về]: Đang quay ngược lại trang trước đó...`));
-         await page.goBack({ waitUntil: 'domcontentloaded' }).catch(()=>{});
-         await sleep(3000);
+         if (context.pages().length > 1) {
+             console.log(chalk.magenta(`[🔙 Agent Trở Về]: Đang đóng tab con để quay lại tab gốc...`));
+             await page.close();
+             await sleep(2000);
+         } else {
+             console.log(chalk.magenta(`[🔙 Agent Trở Về]: Đang quay ngược lại trang trước đó...`));
+             await page.goBack({ waitUntil: 'domcontentloaded' }).catch(()=>{});
+             await sleep(3000);
+         }
       }
       else {
          console.log(chalk.red(`[!] Agent Không Hiểu Lệnh: Hành động không hợp lệ -> ${aiAction.action}`));
@@ -1517,6 +1601,11 @@ async function main() {
     } else {
        task = await ask('2. Bạn muốn AI phân tích và làm gì? (Yêu cầu rõ ràng): ');
        cols = await ask('3. Bạn muốn xuất ra File Excel Tên Cột gì? (VD: TenKhoaHoc, Truong, HocPhi...): ');
+    }
+    
+    let extraNote = await ask('4. Có yêu cầu gì đặc biệt thêm không? (Ví dụ: Chỉ lấy các trường ở USA, hoặc nhấn Enter để bỏ qua): ');
+    if (extraNote.trim()) {
+      task += `\n\n[YÊU CẦU BỔ SUNG TỪ NGƯỜI DÙNG]: ${extraNote}`;
     }
     
     if (url && !url.startsWith('http')) url = 'https://' + url;

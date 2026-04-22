@@ -1,0 +1,114 @@
+{
+  "project": "OnlyOffice UI/UX Specification",
+  "version": "1.0.0",
+  "target_ai": "GPT 5.4",
+  "theme": {
+    "primary_colors": {
+      "blue_main": "#446995",
+      "blue_active": "#3B5D8A",
+      "blue_light": "#E8F0F7",
+      "blue_hover": "#EDF3F9"
+    },
+    "secondary_colors": {
+      "text_main": "#333333",
+      "text_muted": "#666666",
+      "background_app": "#F4F4F4",
+      "background_toolbar": "#FFFFFF",
+      "border_color": "#D1D1D1",
+      "border_light": "#E5E5E5"
+    },
+    "typography": {
+      "ui_font_family": "'Segoe UI', Tahoma, Arial, sans-serif",
+      "document_default_font": "Arial",
+      "font_sizes": {
+        "ui_small": "11px",
+        "ui_normal": "12px",
+        "ui_header": "14px",
+        "document_default": "11pt"
+      },
+      "line_heights": {
+        "ui_normal": "1.4",
+        "toolbar": "1.2"
+      }
+    }
+  },
+  "layout_dimensions": {
+    "viewport_reference": "1342x851",
+    "header_top_height": "40px",
+    "tab_bar_height": "30px",
+    "ribbon_toolbar_height": "95px",
+    "ruler_horizontal_height": "25px",
+    "ruler_vertical_width": "25px",
+    "sidebar_left_width": "40px",
+    "sidebar_right_width": "40px",
+    "status_bar_footer_height": "30px",
+    "main_canvas_area": {
+      "calculation": "calc(100% - 80px) x calc(100% - 220px)",
+      "background": "#E0E0E0",
+      "padding": "20px"
+    }
+  },
+  "component_styling": {
+    "buttons": {
+      "border_radius": "2px",
+      "hover_background": "#E5E5E5",
+      "active_border": "1px solid #446995",
+      "padding": "4px 8px"
+    },
+    "tabs": {
+      "active_underline": "3px solid #446995",
+      "inactive_opacity": "0.8",
+      "height": "30px",
+      "font_weight": "600"
+    },
+    "ribbon_groups": {
+      "label_font_size": "10px",
+      "label_color": "#888888",
+      "group_separator": "1px solid #EAEAEA",
+      "group_margin": "0 12px"
+    },
+    "inputs": {
+      "border_radius": "2px",
+      "border": "1px solid #C0C0C0",
+      "focus_shadow": "0 0 2px rgba(68, 105, 149, 0.5)",
+      "height": "24px"
+    }
+  },
+  "css_variables_inferred": {
+    "--asc-blue": "#446995",
+    "--asc-bg-color": "#f4f4f4",
+    "--asc-text-color": "#333333",
+    "--asc-border-color": "#cfcfcf",
+    "--asc-ribbon-height": "125px",
+    "--asc-canvas-shadow": "0 2px 10px rgba(0,0,0,0.15)"
+  },
+  "ux_hierarchy": {
+    "z_index": {
+      "modal": 1000,
+      "dropdown": 500,
+      "toolbar": 100,
+      "canvas": 1
+    },
+    "interaction_patterns": {
+      "click_feedback": "Instant background color change",
+      "hover_feedback": "Subtle border/background highlight",
+      "scrolling": "Native browser scroll for canvas container"
+    }
+  },
+  "layout_structure": {
+    "top_down": [
+      "Application Header (Logo, Filename, Share, Search)",
+      "Ribbon Tabs (File, Home, Insert, Layout, etc.)",
+      "Ribbon Toolbar (Icons, Dropdowns, Font settings)"
+    ],
+    "middle_horizontal": [
+      "Left Navigation Rail (Search, Navigation, Comments)",
+      "Vertical Ruler",
+      "Main Workspace (Shadowed page centered in gray area)",
+      "Right Settings Rail (Settings, Collaboration, Chat)"
+    ],
+    "bottom": [
+      "Status Bar (Page number, Word count, Language, View modes, Zoom)"
+    ]
+  }
+}
