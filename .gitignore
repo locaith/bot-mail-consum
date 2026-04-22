@@ -7,3 +7,5 @@ output/
 .DS_Store
 *.log
 *.xlsx
+accounts.json
+onlyoffice_ui_ux_spec.json
