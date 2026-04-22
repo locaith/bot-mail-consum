@@ -1,0 +1,14 @@
+[
+  {
+    "id": "your_account_id",
+    "email": "example@gmail.com",
+    "maxEmails": 50,
+    "mailConcurrency": 10,
+    "profileDir": "./profiles/example",
+    "gmailUrl": "https://mail.google.com/mail/u/0/#inbox",
+    "enabled": true,
+    "onlyUnread": false,
+    "query": "",
+    "proxy": ""
+  }
+]
