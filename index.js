@@ -1486,9 +1486,9 @@ BẠN CHỈ ĐƯỢC PHÉP TRẢ VỀ ĐÚNG 1 STRING JSON HỢP LỆ (Không đ
 {
   "thought": "Suy luận của bạn (Ví dụ: Trang web có bộ lọc Quốc gia, tôi nên hỏi người dùng muốn lấy quốc gia nào)",
   "action": "ASK_USER" | "CLICK" | "TYPE" | "EXTRACT" | "WAIT" | "SCROLL_DOWN" | "SCROLL_UP" | "GO_BACK",
-  "element_id": 123, 
+  "element_id": 123,
   "value": "Nếu hành động là TYPE, điền chữ muốn gõ. Nếu hành động là ASK_USER, điền câu hỏi để hỏi người dùng",
-  "is_finished_this_school": true, 
+  "is_finished_this_school": true,
   "extracted_data": [ ... mảng JSON các object theo đúng tên cột, nếu action là EXTRACT ]
 }
 Lưu ý "is_finished_this_school" đặt là true nếu bạn đã lấy XONG HẾT mọi thông tin của trường này (Courses, Rank, Info...) và chuẩn bị quay ra danh sách chính.
