@@ -26,6 +26,7 @@ const TELEGRAM_MODE = String(process.env.TELEGRAM_MODE || 'false').toLowerCase()
 const TELEGRAM_SELECTED_EMAIL = cleanText(process.env.TELEGRAM_SELECTED_EMAIL || '').toLowerCase();
 const TELEGRAM_TARGET_COUNT = cleanText(process.env.TELEGRAM_TARGET_COUNT || 'all');
 const TELEGRAM_FORCE_REPROCESS = String(process.env.TELEGRAM_FORCE_REPROCESS || 'false').toLowerCase() === 'true';
+const TELEGRAM_FAST_INBOX_ROW = String(process.env.TELEGRAM_FAST_INBOX_ROW || 'false').toLowerCase() === 'true';
 const TELEGRAM_CUSTOM_PROMPT = cleanText(process.env.TELEGRAM_CUSTOM_PROMPT || '');
 const TELEGRAM_LOGIN_PASSWORD = process.env.TELEGRAM_LOGIN_PASSWORD || '';
 const TELEGRAM_WAIT_APPROVAL_SECONDS = parseInt(process.env.TELEGRAM_WAIT_APPROVAL_SECONDS || '240', 10);
@@ -71,6 +72,15 @@ function cleanText(value) {
     .replace(/\u200b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function isNonInboxGoogleUrl(value) {
+  const url = String(value || '').toLowerCase();
+  return (
+    url.includes('accounts.google.com') ||
+    url.includes('workspace.google.com') ||
+    url.includes('google.com/gmail/about')
+  );
 }
 
 function emitTelegramEvent(event, message, extra = {}) {
@@ -237,6 +247,8 @@ function applyPremiumStyling(sheet, headers) {
       color = 'FFBF8F00'; // Màu Vàng đất (Phí sinh hoạt)
     } else if (head.includes('website') || head.includes('url')) {
       color = 'FF7030A0'; // Màu Tím (Link liên kết)
+    } else if (head.includes('trạng thái') || head.includes('status')) {
+      color = 'FF00B050'; // Màu Xanh lá (Trạng thái DONE)
     }
 
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color } };
@@ -391,19 +403,33 @@ class GmailWebBot {
   }
 
   async isLoggedIn() {
-    await this.page.goto('https://mail.google.com/', { waitUntil: 'domcontentloaded' });
+    await this.page.goto(this.account.gmailUrl || 'https://mail.google.com/mail/#inbox', { waitUntil: 'domcontentloaded' });
     await this.randomDelay();
 
     const url = this.page.url();
-    if (url.includes('accounts.google.com')) {
+    if (isNonInboxGoogleUrl(url)) {
       return false;
     }
 
     try {
-      await this.page.waitForSelector('div[role="main"], table[role="grid"], input[placeholder*="Search"], input[aria-label*="Search"]', { timeout: 15000 });
+      await this.page.waitForSelector([
+        'table[role="grid"]',
+        'tr[role="row"]',
+        'div[role="main"] tr.zA',
+        'div[role="main"] [data-legacy-thread-id]',
+        'div[gh="tl"]',
+        'a[title*="Inbox"]',
+        'a[aria-label*="Inbox"]',
+        'a[title*="Hộp thư đến"]',
+        'a[aria-label*="Hộp thư đến"]',
+        'input[placeholder*="Search"]',
+        'input[aria-label*="Search"]',
+        'input[placeholder*="Tìm kiếm"]',
+        'input[aria-label*="Tìm kiếm"]'
+      ].join(', '), { timeout: 15000 });
       return true;
     } catch (_) {
-      return !this.page.url().includes('accounts.google.com');
+      return false;
     }
   }
 
@@ -507,7 +533,7 @@ class GmailWebBot {
     await this.randomDelay(2000, 4000);
     await this.page.waitForSelector('body', { timeout: 30000 });
 
-    if (this.page.url().includes('accounts.google.com')) {
+    if (isNonInboxGoogleUrl(this.page.url())) {
       throw new Error('Profile chưa đăng nhập Gmail. Chạy npm run setup trước.');
     }
 
@@ -516,7 +542,11 @@ class GmailWebBot {
       'table[role="grid"] tr',
       'div[role="main"] tr.zA',
       'div[role="main"] [data-legacy-thread-id]',
-      'div[role="main"]'
+      'div[gh="tl"]',
+      'input[placeholder*="Search"]',
+      'input[aria-label*="Search"]',
+      'input[placeholder*="Tìm kiếm"]',
+      'input[aria-label*="Tìm kiếm"]'
     ], 25000);
 
     if (!inboxReady) {
@@ -528,6 +558,42 @@ class GmailWebBot {
     } else {
       await this.dismissPopups();
     }
+  }
+
+  buildGmailThreadUrl(href) {
+    const rawHref = cleanText(href || '');
+    if (!rawHref) return '';
+    if (/^https?:\/\//i.test(rawHref)) return rawHref;
+
+    const accountUrl = cleanText(this.account.gmailUrl || '');
+    const base = accountUrl && accountUrl.includes('#')
+      ? accountUrl.slice(0, accountUrl.indexOf('#'))
+      : (accountUrl || `https://mail.google.com/mail/?authuser=${encodeURIComponent(this.account.email || '')}`);
+
+    if (rawHref.startsWith('#')) {
+      return `${base}${rawHref}`;
+    }
+    if (rawHref.startsWith('/mail/')) {
+      return `https://mail.google.com${rawHref}`;
+    }
+    return `${base}#${rawHref.replace(/^\/+/, '')}`;
+  }
+
+  buildFallbackDetailFromTarget(target) {
+    const subject = cleanText(target.subject || '');
+    const senderName = cleanText(target.senderName || '');
+    const senderEmail = cleanText(target.senderEmail || '');
+    const snippet = cleanText(target.snippet || target.preview || '').replace(/^['"`\s]*-\s*/, '').trim();
+    const rawTimestamp = cleanText(target.dateTitle || target.dateText || DateTime.now().setZone(TIMEZONE).toISO());
+
+    return {
+      subject: subject || snippet.slice(0, 120) || '(không có tiêu đề)',
+      senderName,
+      senderEmail,
+      rawTimestamp,
+      body: snippet,
+      pageUrl: target.url || this.account.gmailUrl || '',
+    };
   }
 
   async applySearchQuery() {
@@ -611,15 +677,30 @@ class GmailWebBot {
 
           const text = (row.innerText || '').replace(/\s+/g, ' ').trim();
           const subjectCandidate = text.split('\n').slice(0, 8).join(' | ');
+          const senderEl = row.querySelector('span[email]');
+          const subjectEl = row.querySelector('span[data-thread-id], span.bog, span.bqe');
+          const snippetEl = row.querySelector('span.y2, .y2');
+          const dateEl = row.querySelector('td.xW span[title], td.xW span, .xW span[title], .xW span');
 
-          items.push({ href, preview: subjectCandidate, unread });
+          items.push({
+            href,
+            preview: subjectCandidate,
+            unread,
+            senderName: senderEl ? (senderEl.getAttribute('name') || senderEl.textContent || '') : '',
+            senderEmail: senderEl ? (senderEl.getAttribute('email') || '') : '',
+            subject: subjectEl ? (subjectEl.textContent || '') : '',
+            snippet: snippetEl ? (snippetEl.textContent || '') : subjectCandidate,
+            dateText: dateEl ? (dateEl.textContent || '') : '',
+            dateTitle: dateEl ? (dateEl.getAttribute('title') || '') : ''
+          });
         }
         return items;
       }, { onlyUnread });
 
       const before = targets.length;
       for (const item of batch) {
-        const url = item.href.startsWith('http') ? item.href : `https://mail.google.com/mail/u/0/${item.href.replace(/^\//, '')}`;
+        const url = this.buildGmailThreadUrl(item.href);
+        if (!url) continue;
         if (!seen.has(url)) {
           seen.add(url);
           targets.push({ ...item, url });
@@ -648,7 +729,13 @@ class GmailWebBot {
 
         await detailPage.goto(target.url, { waitUntil: 'domcontentloaded' });
         // Đợi DOM của nội dung email load thành công để tránh lỗi cào nhầm giao diện loading có text "Tìm kiếm"
-        await detailPage.waitForSelector('h2.hP, div.a3s', { state: 'attached', timeout: 20000 }).catch(() => {});
+        const hasMailDetail = await detailPage
+          .waitForSelector('h2.hP, div.a3s', { state: 'attached', timeout: 20000 })
+          .then(() => true)
+          .catch(() => false);
+        if (!hasMailDetail) {
+          throw new Error('Gmail thread body was not ready.');
+        }
         await this.randomDelay(1200, 2500);
 
         const detail = await detailPage.evaluate(() => {
@@ -684,14 +771,15 @@ class GmailWebBot {
           const rawTimestamp = attrOfLast(['span.g3[title]', 'span[title][class*="g3"]'], 'title') || textOfLast(['span.g3', 'span[title][class*="g3"]', 'time']);
 
           let body = '';
-          const bodyNodes = Array.from(document.querySelectorAll('div.a3s.aiL, div.a3s, div[role="listitem"] div[dir="auto"]'));
+          const bodyNodes = Array.from(document.querySelectorAll('div.a3s.aiL, div.a3s, div[role="listitem"] div[dir="auto"]'))
+            .filter(node => {
+              const text = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+              const rect = node.getBoundingClientRect();
+              return text && rect.width > 0 && rect.height > 0;
+            });
           if (bodyNodes.length > 0) {
             // Lấy nội dung của message cuối cùng (mới nhất trong thread)
             body = (bodyNodes[bodyNodes.length - 1].innerText || '').replace(/\s+/g, ' ').trim();
-          }
-
-          if (!body) {
-            body = (document.body.innerText || '').replace(/\s+/g, ' ').trim();
           }
 
           return {
@@ -734,6 +822,22 @@ class GmailWebBot {
 
     if (!dt.isValid) {
       dt = DateTime.fromFormat(rawTimestamp, 'ccc, LLL d, yyyy, h:mm a', { zone: TIMEZONE, locale: 'en' });
+    }
+
+    if (!dt.isValid) {
+      const viFull = cleanText(rawTimestamp).match(/(\d{1,2}):(\d{2}).*?(\d{1,2})\s*thg\s*(\d{1,2}),\s*(\d{4})/i);
+      if (viFull) {
+        dt = DateTime.fromObject(
+          {
+            year: parseInt(viFull[5], 10),
+            month: parseInt(viFull[4], 10),
+            day: parseInt(viFull[3], 10),
+            hour: parseInt(viFull[1], 10),
+            minute: parseInt(viFull[2], 10),
+          },
+          { zone: TIMEZONE }
+        );
+      }
     }
 
     if (!dt.isValid) {
@@ -878,7 +982,30 @@ class GmailWebBot {
   }
 
   async processSingleTarget(target) {
-    const detail = await this.extractMailDetailFromNewPage(target);
+    let detail;
+    if (TELEGRAM_FAST_INBOX_ROW) {
+      detail = this.buildFallbackDetailFromTarget(target);
+    } else {
+      try {
+      detail = await Promise.race([
+        this.extractMailDetailFromNewPage(target),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Gmail thread extraction timeout')), 90000))
+      ]);
+      } catch (error) {
+        detail = this.buildFallbackDetailFromTarget(target);
+        await this.log(`Dùng dữ liệu inbox-row vì chưa mở được body thread: ${target.preview}`, 'warning');
+      }
+    }
+    const compactBody = cleanText(detail.body || '').toLowerCase();
+    const shellText =
+      compactBody.includes('su dung gmail bang trinh doc man hinh') ||
+      compactBody.includes('sử dụng gmail bằng trình đọc màn hình') ||
+      compactBody.includes('google workspace status dashboard') ||
+      compactBody.includes('trang tổng quan trạng thái google');
+    if ((!cleanText(detail.subject) && !compactBody) || shellText) {
+      await this.log(`Bỏ qua thread không đọc được nội dung mail thật: ${target.preview}`, 'warning');
+      return null;
+    }
     const messageKey = this.buildMessageKey(detail);
 
     if (this.processed.keys[messageKey] && !workerData.forceProcess) {
@@ -990,7 +1117,7 @@ class GmailWebBot {
 
           for (const el of threadElements) {
             const threadId = el.getAttribute('data-thread-id') || el.getAttribute('data-legacy-thread-id');
-            let row = el; // Vì selector đã là .zA, row chính là email
+            let row = el.closest('tr, div[role="row"], div[role="listitem"], .zA') || el;
             if (!row) continue;
 
             const link = row.querySelector('a[href*="/"]');
@@ -1013,15 +1140,30 @@ class GmailWebBot {
 
             const text = (row.innerText || '').replace(/\s+/g, ' ').trim();
             const preview = text.split('\n').slice(0, 8).join(' | ');
+            const senderEl = row.querySelector('span[email]');
+            const subjectEl = row.querySelector('span[data-thread-id], span.bog, span.bqe');
+            const snippetEl = row.querySelector('span.y2, .y2');
+            const dateEl = row.querySelector('td.xW span[title], td.xW span, .xW span[title], .xW span');
 
-            items.push({ href, preview, unread });
+            items.push({
+              href,
+              preview,
+              unread,
+              senderName: senderEl ? (senderEl.getAttribute('name') || senderEl.textContent || '') : '',
+              senderEmail: senderEl ? (senderEl.getAttribute('email') || '') : '',
+              subject: subjectEl ? (subjectEl.textContent || '') : '',
+              snippet: snippetEl ? (snippetEl.textContent || '') : preview,
+              dateText: dateEl ? (dateEl.textContent || '') : '',
+              dateTitle: dateEl ? (dateEl.getAttribute('title') || '') : ''
+            });
           }
           return items;
         }, { onlyUnread });
 
         let newTargets = [];
         for (const item of batch) {
-          const url = item.href.startsWith('http') ? item.href : `https://mail.google.com/mail/u/0/${item.href.replace(/^\//, '')}`;
+          const url = this.buildGmailThreadUrl(item.href);
+          if (!url) continue;
           if (!seenUrls.has(url)) {
             seenUrls.add(url);
             newTargets.push({ ...item, url });
@@ -1038,6 +1180,7 @@ class GmailWebBot {
         }
 
         noGrowthRounds = 0;
+        newTargets = newTargets.slice(0, Math.max(1, targetCount - rows.length));
 
         const chunks = chunkArray(newTargets, Math.max(1, this.account.mailConcurrency));
         for (const chunk of chunks) {
@@ -1085,9 +1228,10 @@ class GmailWebBot {
 async function runWorker(data) {
   const bot = new GmailWebBot(data.account, data.accountIndex);
   try {
+    const workerTimeoutSeconds = parseInt(process.env.TELEGRAM_WORKER_TIMEOUT_SECONDS || '1800', 10);
     const rows = await Promise.race([
       bot.runAccount(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Worker timeout sau 30 phút')), 30 * 60 * 1000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Worker timeout')), Math.max(60, workerTimeoutSeconds) * 1000))
     ]);
     parentPort.postMessage({ accountIndex: data.accountIndex, rows });
   } catch (error) {
@@ -1295,7 +1439,7 @@ async function runUniversalAgent(targetUrl, taskPrompt, colsInput) {
 
   const workbook = new ExcelJS.Workbook();
   let sheet;
-  const fullHeaders = [...customColumns, 'url', 'created_at'];
+  const fullHeaders = [...customColumns, 'url', 'trạng thái', 'created_at'];
 
   if (fileExists(outFile)) {
     await workbook.xlsx.readFile(outFile);
@@ -1344,8 +1488,10 @@ BẠN CHỈ ĐƯỢC PHÉP TRẢ VỀ ĐÚNG 1 STRING JSON HỢP LỆ (Không đ
   "action": "ASK_USER" | "CLICK" | "TYPE" | "EXTRACT" | "WAIT" | "SCROLL_DOWN" | "SCROLL_UP" | "GO_BACK",
   "element_id": 123, 
   "value": "Nếu hành động là TYPE, điền chữ muốn gõ. Nếu hành động là ASK_USER, điền câu hỏi để hỏi người dùng",
+  "is_finished_this_school": true, 
   "extracted_data": [ ... mảng JSON các object theo đúng tên cột, nếu action là EXTRACT ]
 }
+Lưu ý "is_finished_this_school" đặt là true nếu bạn đã lấy XONG HẾT mọi thông tin của trường này (Courses, Rank, Info...) và chuẩn bị quay ra danh sách chính.
 Lưu ý "element_id" phải là một số nguyên (number), nếu không có thì để null.
 
 Nguyên tắc:
@@ -1503,17 +1649,18 @@ TỰ ĐỘNG HÓA: Sau khi EXTRACT, bạn hãy chủ động tìm cách quay l�
             
             data.forEach(item => {
                const rowData = customColumns.map(c => escapeFormula(item[c] ?? ''));
-               rowData.push(currentUrl, now);
+               rowData.push(currentUrl, 'DONE', now);
                sheet.addRow(rowData);
             });
 
-            // Cập nhật trí nhớ (Checkpoint)
-            if (!processedUrlsSet.has(currentUrl)) {
+            // Cập nhật trí nhớ (Checkpoint) - Chỉ lưu khi Agent báo đã xong toàn bộ trường
+            if (aiAction.is_finished_this_school && !processedUrlsSet.has(currentUrl)) {
                 processedUrlsSet.add(currentUrl);
                 agentState.processedUrls.push(currentUrl);
                 agentState.statistics.totalExtracted++;
                 agentState.lastUrl = currentUrl;
                 safeJsonWrite(stateFile, agentState);
+                console.log(chalk.green(`[🏁 CHECKPOINT] Đã hoàn thành xong 1 trường và lưu trạng thái.`));
             }
 
             try {
@@ -1781,8 +1928,13 @@ async function main() {
 }
 
 if (isMainThread) {
-  const runner = process.argv.includes('--telegram-run') ? runTelegramMode : main;
-  runner().catch(error => {
+  const isTelegramRun = process.argv.includes('--telegram-run');
+  const runner = isTelegramRun ? runTelegramMode : main;
+  runner().then(() => {
+    if (isTelegramRun) {
+      process.exit(0);
+    }
+  }).catch(error => {
     if (TELEGRAM_MODE) {
       emitTelegramEvent('error', cleanText(error.message || String(error)));
       process.exit(1);
